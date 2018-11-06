@@ -20,7 +20,6 @@ func TestMain(m *testing.M) {
 func TestNewState(t *testing.T) {
 	have := NewState()
 	want := tf.NewState()
-	have.Init()
 	want.Lineage = have.Lineage
 	assert.Equal(t, want, have)
 }
