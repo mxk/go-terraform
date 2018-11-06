@@ -61,9 +61,9 @@ func TestMakeName(t *testing.T) {
 		{"_/a/b-1//2.3$", "_a_b-1_2_3_"},
 	}
 	for _, tc := range tests {
-		assert.Equal(t, tc.want, MakeName(tc.in), "%+v", tc)
+		assert.Equal(t, tc.want, makeName(tc.in), "%+v", tc)
 	}
-	assert.Panics(t, func() { MakeName("") })
+	assert.Panics(t, func() { makeName("") })
 }
 
 func TestNormStateKeys(t *testing.T) {
@@ -77,7 +77,7 @@ func TestNormStateKeys(t *testing.T) {
 	have := NewState()
 	have.RootModule().Resources["azurerm_resource_group.rg"] = rg
 	want := NewState()
-	normKey := "azurerm_resource_group.provider_azurerm_subscriptions_" + az.NilGUID + "_resourceGroups_tf-test-rg"
+	normKey := "azurerm_resource_group._subscriptions_" + az.NilGUID + "_resourceGroups_tf-test-rg"
 	want.RootModule().Resources[normKey] = DeepCopy(rg).(*tf.ResourceState)
 	st, err := NormStateKeys(have)
 	require.NoError(t, err)

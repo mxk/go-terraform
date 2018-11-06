@@ -97,25 +97,6 @@ func DeepCopy(v interface{}) interface{} {
 	return copystructure.Must(copystructure.Copy(v))
 }
 
-var (
-	makeNameOnce sync.Once
-	normNameRE   *regexp.Regexp
-)
-
-// TODO: Unexport MakeName after scan logic is moved from tfstate
-
-// MakeName returns a representation of s that would matches config.NameRegexp.
-func MakeName(s string) string {
-	if s == "" {
-		panic("tfx: empty name")
-	}
-	makeNameOnce.Do(func() {
-		normNameRE = regexp.MustCompile(
-			`^[^0-9A-Za-z][^0-9A-Za-z-]*|[^0-9A-Za-z-]+`)
-	})
-	return normNameRE.ReplaceAllLiteralString(s, "_")
-}
-
 // NormStateKeys returns a transformation that normalizes resource state keys
 // using provider names and resource IDs.
 func NormStateKeys(s *tf.State) (StateTransform, error) {
@@ -126,7 +107,7 @@ func NormStateKeys(s *tf.State) (StateTransform, error) {
 			if err != nil {
 				return nil, err
 			}
-			norm := MakeName(r.Provider + "_" + r.Primary.ID)
+			norm := makeName(r.Primary.ID)
 			if sk.Mode != config.ManagedResourceMode || sk.Name == norm {
 				continue
 			}
@@ -367,4 +348,21 @@ func addressToStateKey(addr string) (path []string, key string, err error) {
 		Index: k.Index,
 	}
 	return k.Path, sk.String(), nil
+}
+
+var (
+	makeNameOnce sync.Once
+	normNameRE   *regexp.Regexp
+)
+
+// makeName returns a representation of s that would match config.NameRegexp.
+func makeName(s string) string {
+	if s == "" {
+		panic("tfx: empty name")
+	}
+	makeNameOnce.Do(func() {
+		normNameRE = regexp.MustCompile(
+			`^[^0-9A-Za-z][^0-9A-Za-z-]*|[^0-9A-Za-z-]+`)
+	})
+	return normNameRE.ReplaceAllLiteralString(s, "_")
 }

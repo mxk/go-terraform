@@ -4,6 +4,7 @@ package tfx
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform/config/module"
@@ -16,6 +17,7 @@ import (
 // context with no registered providers.
 type Ctx struct {
 	providers map[string]tf.ResourceProviderFactory
+	schemas   map[string]*schema.Provider
 	resolver  tf.ResourceProviderResolver
 }
 
@@ -31,24 +33,30 @@ func (c *Ctx) SetProviderFactory(name string, f tf.ResourceProviderFactory) {
 	if c.providers == nil {
 		c.providers = make(map[string]tf.ResourceProviderFactory)
 	}
+	delete(c.schemas, name)
 	c.providers[name] = f
 	c.resolver = nil
 }
 
-// Schema returns the schema for the specified provider.
-func (c *Ctx) Schema(name string) (*schema.Provider, error) {
+// Schema returns the schema for the specified provider name. It returns nil if
+// the provider is not registered or not implemented via schema.Provider. The
+// returned value is cached and must only be used for local schema operations.
+func (c *Ctx) Schema(name string) *schema.Provider {
+	if s := c.schemas[name]; s != nil {
+		return s
+	}
 	if f := c.providers[name]; f != nil {
 		p, err := f()
-		if err == nil {
-			if s, ok := p.(*schema.Provider); ok {
-				return s, nil
+		if s, ok := p.(*schema.Provider); ok && err == nil {
+			if c.schemas == nil {
+				c.schemas = make(map[string]*schema.Provider)
 			}
-			err = fmt.Errorf("tfx: provider %q (%T) is not a *schema.Provider",
-				name, p)
+			c.schemas[name] = s
+			s.ConfigureFunc = nil
+			return s
 		}
-		return nil, err
 	}
-	return nil, fmt.Errorf("tfx: provider %q not available", name)
+	return nil
 }
 
 // Refresh updates the state of all resources in s.
@@ -78,6 +86,38 @@ func (c *Ctx) Diff(t *module.Tree, s *tf.State) (*tf.Diff, error) {
 		return nil, err
 	}
 	return normDiff(p.Diff), nil
+}
+
+// ResourceForID returns a skeleton resource state for the specified provider
+// name, resource type, and resource ID. The returned string is a normalized
+// resource state key.
+func (c *Ctx) ResourceForID(provider, typ, id string) (string, *tf.ResourceState, error) {
+	p := c.Schema(provider)
+	if p == nil {
+		return "", nil, fmt.Errorf("tfx: unknown provider %q", provider)
+	}
+	r := p.ResourcesMap[typ]
+	if r == nil {
+		return "", nil, fmt.Errorf(
+			"tfx: invalid resource type %q for provider %q", typ, provider)
+	}
+	var meta map[string]interface{}
+	if r.SchemaVersion > 0 {
+		meta = map[string]interface{}{
+			"schema_version": strconv.Itoa(r.SchemaVersion),
+		}
+	}
+	// TODO: Should default values be set here?
+	// TODO: Use importers?
+	return typ + "." + makeName(id), &tf.ResourceState{
+		Type: typ,
+		Primary: &tf.InstanceState{
+			ID:         id,
+			Attributes: map[string]string{"id": id},
+			Meta:       meta,
+		},
+		Provider: "provider." + provider,
+	}, nil
 }
 
 // Conform returns a transformation that associates root module resource states
