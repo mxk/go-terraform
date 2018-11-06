@@ -51,6 +51,20 @@ func (c *Ctx) Schema(name string) (*schema.Provider, error) {
 	return nil, fmt.Errorf("tfx: provider %q not available", name)
 }
 
+// Refresh updates the state of all resources in s.
+func (c *Ctx) Refresh(s *tf.State) error {
+	opts := c.opts(module.NewEmptyTree(), s)
+	tc, err := tf.NewContext(&opts)
+	if err != nil {
+		return err
+	}
+	t, err := tc.Refresh()
+	if err == nil {
+		*s = *t
+	}
+	return err
+}
+
 // Diff return the changes required to apply configuration t to state s. If s is
 // nil, an empty state is assumed.
 func (c *Ctx) Diff(t *module.Tree, s *tf.State) (*tf.Diff, error) {

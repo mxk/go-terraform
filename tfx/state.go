@@ -22,7 +22,7 @@ func NewState() *tf.State {
 		Version: tf.StateVersion,
 		Lineage: "00000000-0000-0000-0000-000000000000",
 	}
-	s.AddModule([]string{"root"})
+	s.AddModule([]string{tf.RootModuleName})
 	return s
 }
 
