@@ -7,9 +7,10 @@ import (
 	"testing"
 
 	"github.com/LuminalHQ/cloudcover/x/cli"
-	"github.com/LuminalHQ/cloudcover/x/tfazure"
+	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm"
 )
 
 func TestDiff(t *testing.T) {
@@ -32,9 +33,14 @@ func TestDiff(t *testing.T) {
 			  resource_group_name = "rg3" (expected: "rg1")
 		`},
 	}
-	dir := testDataDir()
+	// Calling azurerm.Provider() directly to avoid import cycle with tfazure
+	p := azurerm.Provider().(*schema.Provider)
+	p.ConfigureFunc = func(*schema.ResourceData) (interface{}, error) {
+		return nil, nil
+	}
 	var c Ctx
-	c.SetProvider(tfazure.ProviderName, tfazure.Provider(nil))
+	c.SetProvider("azurerm", p)
+	dir := testDataDir()
 	m, err := LoadModule(filepath.Join(dir, "cfg.tf"))
 	require.NoError(t, err)
 	for _, tc := range tests {
