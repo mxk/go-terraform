@@ -309,6 +309,59 @@ func (st StateTransform) Apply(s *tf.State) error {
 	return nil
 }
 
+// ApplyToDiff updates resource diff keys according to the transformation map.
+// The diff may be modified after an error.
+func (st StateTransform) ApplyToDiff(d *tf.Diff) error {
+	if len(d.Modules) == 0 {
+		return nil
+	}
+	diffMap := make(map[string]*tf.InstanceDiff, len(d.Modules[0].Resources))
+	for _, m := range d.Modules {
+		for k, r := range m.Resources {
+			addr, err := stateKeyToAddress(m.Path, k)
+			if err != nil {
+				return err
+			}
+			addr, ok := st[addr]
+			if !ok {
+				continue
+			}
+			delete(m.Resources, k) // TODO: Defer?
+			if diffMap[addr] != nil {
+				panic("tfx: address collision: " + addr)
+			}
+			if addr != "" {
+				diffMap[addr] = r
+			}
+		}
+	}
+	for addr, r := range diffMap {
+		path, key, err := addressToStateKey(addr)
+		if err != nil {
+			return err
+		}
+		m := d.ModuleByPath(path)
+		if m == nil {
+			m = d.AddModule(path)
+		}
+		m.Resources[key] = r
+	}
+	return nil
+}
+
+// Inverse returns an inverse state transformation. It returns nil if st is
+// destructive. Implicit resource replacement is not detected.
+func (st StateTransform) Inverse() StateTransform {
+	inv := make(StateTransform, len(st))
+	for k, v := range st {
+		if _, dup := inv[v]; v == "" || dup {
+			return nil
+		}
+		inv[v] = k
+	}
+	return inv
+}
+
 // stateKeyToAddress converts a resource state key into a normalized address.
 func stateKeyToAddress(path []string, key string) (string, error) {
 	k, err := tf.ParseResourceStateKey(key)

@@ -3,13 +3,15 @@ package tfx
 
 import (
 	"fmt"
-	"sort"
+	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
+	"github.com/mitchellh/reflectwalk"
 )
 
 // Ctx maintains a resource provider registry and implements non-standard
@@ -38,25 +40,36 @@ func (c *Ctx) SetProviderFactory(name string, f tf.ResourceProviderFactory) {
 	c.resolver = nil
 }
 
-// Schema returns the schema for the specified provider name. It returns nil if
-// the provider is not registered or not implemented via schema.Provider. The
+// Schema returns the schema for the specified provider. It returns nil if the
+// provider is not registered or not implemented via schema.Provider. The
 // returned value is cached and must only be used for local schema operations.
-func (c *Ctx) Schema(name string) *schema.Provider {
-	if s := c.schemas[name]; s != nil {
+func (c *Ctx) Schema(provider string) *schema.Provider {
+	if s := c.schemas[provider]; s != nil {
 		return s
 	}
-	if f := c.providers[name]; f != nil {
+	if f := c.providers[provider]; f != nil {
 		p, err := f()
 		if s, ok := p.(*schema.Provider); ok && err == nil {
 			if c.schemas == nil {
 				c.schemas = make(map[string]*schema.Provider)
 			}
-			c.schemas[name] = s
+			c.schemas[provider] = s
 			s.ConfigureFunc = nil
 			return s
 		}
 	}
 	return nil
+}
+
+// ResourceSchema returns the schema for the specified resource type and its
+// provider. It returns nil if the type is unknown or not implemented via
+// schema.Provider.
+func (c *Ctx) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
+	p := c.Schema(TypeProvider(typ))
+	if p != nil {
+		return p, p.ResourcesMap[typ]
+	}
+	return nil, nil
 }
 
 // Refresh updates the state of all resources in s.
@@ -71,6 +84,78 @@ func (c *Ctx) Refresh(s *tf.State) error {
 		*s = *t
 	}
 	return err
+}
+
+// Patch applies a diff to an existing state.
+func (c *Ctx) Patch(s *tf.State, d *tf.Diff) (*tf.State, error) {
+	// TODO: Don't need state transform.
+	s, d = s.DeepCopy(), d.DeepCopy()
+	st, err := NormStateKeys(s)
+	if err != nil {
+		return nil, err
+	}
+	inv := st.Inverse()
+	if inv == nil {
+		panic("tfx: no inverse for NormStateKeys")
+	}
+	if err = st.Apply(s); err != nil {
+		return nil, err
+	}
+	if err = st.ApplyToDiff(d); err != nil {
+		return nil, err
+	}
+	providers := make(map[string]*schema.Provider)
+	for _, m := range s.Modules {
+		md := d.ModuleByPath(m.Path)
+		if md == nil {
+			continue
+		}
+		info := tf.InstanceInfo{ModulePath: m.Path}
+		for k, r := range m.Resources {
+			diff := md.Resources[k]
+			if diff == nil {
+				continue
+			}
+			provider := TypeProvider(r.Type)
+			p := providers[provider]
+			if p == nil {
+				if p = c.Schema(provider); p == nil {
+					return nil, fmt.Errorf("tfx: no provider for type %q", r.Type)
+				}
+				p = DeepCopy(p).(*schema.Provider)
+				bypassCRUD(p)
+				providers[provider] = p
+			}
+			info.Id = k
+			info.Type = r.Type
+			r.Primary, err = p.Apply(&info, r.Primary, diff)
+			if err != nil {
+				return nil, err
+			}
+			if r.Primary == nil {
+				delete(m.Resources, k)
+			}
+		}
+	}
+	// TODO: Creation
+	return s, inv.Apply(s)
+}
+
+// Transition executes plan and apply operations to transition states.
+func (c *Ctx) Transition(have, want *tf.State) (*tf.State, error) {
+	t, err := c.configFromState(want)
+	if err != nil {
+		return nil, err
+	}
+	opts := c.opts(t, have)
+	tc, err := tf.NewContext(&opts)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = tc.Plan(); err != nil {
+		return nil, err
+	}
+	return tc.Apply()
 }
 
 // Diff return the changes required to apply configuration t to state s. If s is
@@ -88,18 +173,27 @@ func (c *Ctx) Diff(t *module.Tree, s *tf.State) (*tf.Diff, error) {
 	return normDiff(p.Diff), nil
 }
 
+// DiffStates returns a diff between states a and b.
+func (c *Ctx) DiffStates(a, b *tf.State) (*tf.Diff, error) {
+	t, err := c.configFromState(b)
+	if err != nil {
+		return nil, err
+	}
+	return c.Diff(t, a)
+}
+
 // ResourceForID returns a skeleton resource state for the specified provider
 // name, resource type, and resource ID. The returned string is a normalized
 // resource state key.
-func (c *Ctx) ResourceForID(provider, typ, id string) (string, *tf.ResourceState, error) {
+func (c *Ctx) ResourceForID(typ, id string) (string, *tf.ResourceState, error) {
+	provider := TypeProvider(typ)
 	p := c.Schema(provider)
 	if p == nil {
 		return "", nil, fmt.Errorf("tfx: unknown provider %q", provider)
 	}
 	r := p.ResourcesMap[typ]
 	if r == nil {
-		return "", nil, fmt.Errorf(
-			"tfx: invalid resource type %q for provider %q", typ, provider)
+		return "", nil, fmt.Errorf("tfx: unknown resource type %q", typ)
 	}
 	var meta map[string]interface{}
 	if r.SchemaVersion > 0 {
@@ -116,7 +210,7 @@ func (c *Ctx) ResourceForID(provider, typ, id string) (string, *tf.ResourceState
 			Attributes: map[string]string{"id": id},
 			Meta:       meta,
 		},
-		Provider: "provider." + provider,
+		Provider: tf.ResolveProviderName(provider, nil),
 	}, nil
 }
 
@@ -197,40 +291,96 @@ func (c *Ctx) opts(t *module.Tree, s *tf.State) tf.ContextOpts {
 	}
 }
 
-// normDiff normalizes a diff by removing empty modules and sorting those that
-// remain by path.
-func normDiff(d *tf.Diff) *tf.Diff {
-	keep := d.Modules[:0]
-	for _, m := range d.Modules {
-		if !m.Empty() {
-			keep = append(keep, m)
-		}
+// configFromState converts a state into a config. Indexed resources are not
+// supported because they don't have 1:1 mapping with the config.
+func (c *Ctx) configFromState(s *tf.State) (*module.Tree, error) {
+	m := s.RootModule() // TODO: Handle other modules?
+	cfg := &config.Config{
+		Resources: make([]*config.Resource, 0, len(m.Resources)),
 	}
-	sort.Slice(keep, func(i, j int) bool {
-		return lessModulePath(keep[i].Path, keep[j].Path)
-	})
-	d.Modules = keep
-	return d
+	providers := make(map[string]struct{})
+	for k, r := range m.Resources {
+		sk, err := tf.ParseResourceStateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		if sk.Index != -1 {
+			return nil, fmt.Errorf(
+				"tfx: cannot create config from indexed state for %q", k)
+		}
+		provider := TypeProvider(r.Type)
+		p := c.Schema(provider)
+		if p == nil {
+			continue
+		}
+		rs := p.ResourcesMap[r.Type]
+		if rs == nil {
+			continue
+		}
+		providers[provider] = struct{}{}
+		count, _ := config.NewRawConfig(map[string]interface{}{"count": "1"})
+		count.Key = "count"
+		cfg.Resources = append(cfg.Resources, &config.Resource{
+			Mode:      sk.Mode,
+			Name:      sk.Name,
+			Type:      sk.Type,
+			RawCount:  count,
+			RawConfig: configFromResourceState(rs, r.Primary),
+		})
+	}
+	empty, _ := config.NewRawConfig(make(map[string]interface{}))
+	cfg.ProviderConfigs = make([]*config.ProviderConfig, 0, len(providers))
+	for p := range providers {
+		// TODO: May need to set non-optional attributes
+		cfg.ProviderConfigs = append(cfg.ProviderConfigs,
+			&config.ProviderConfig{Name: p, RawConfig: empty})
+	}
+	t := module.NewTree("", cfg)
+	if err := t.Load(&module.Storage{Mode: module.GetModeNone}); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
-// lessModulePath returns true if module path a should be sorted before path b.
-func lessModulePath(a, b []string) bool {
-	if ar, br := isRootModule(a), isRootModule(b); ar || br {
-		return ar && !br
-	}
-	for len(a) > 0 && len(b) > 0 {
-		if a[0] != b[0] {
-			return a[0] < b[0]
+// configFromResourceState creates a raw config from an existing state.
+func configFromResourceState(r *schema.Resource, s *tf.InstanceState) *config.RawConfig {
+	d := r.Data(s)
+	m := make(map[string]interface{}, len(r.Schema))
+	for k, rs := range r.Schema {
+		if !rs.Required && !rs.Optional {
+			continue // Computed-only field
 		}
-		a, b = a[1:], b[1:]
+		if v, ok := d.GetOk(k); ok { // TODO: Should this use GetOkExists?
+			m[k] = makeRaw(v)
+		}
 	}
-	return len(a) < len(b)
+	raw, err := config.NewRawConfig(m)
+	if err != nil {
+		panic(err)
+	}
+	return raw
 }
 
-// isRootModule returns true if path represents the root module.
-func isRootModule(path []string) bool {
-	// TODO: Can the first element be anything other than "root"?
-	return len(path) == 1 && path[0] == "root"
+// makeRaw converts a value from *schema.ResourceData into a representation that
+// can be used in *config.RawConfig.
+func makeRaw(v interface{}) interface{} {
+	switch v := v.(type) {
+	case []interface{}:
+		for i := range v {
+			v[i] = makeRaw(v[i])
+		}
+	case map[string]interface{}:
+		for k := range v {
+			v[k] = makeRaw(v[k])
+		}
+	case *schema.Set:
+		l := v.List()
+		for i := range l {
+			l[i] = makeRaw(l[i])
+		}
+		return l
+	}
+	return v
 }
 
 // stateKeyType returns the first component of a resource state key. This will
@@ -242,23 +392,39 @@ func stateKeyType(k string) string {
 	return ""
 }
 
-// diffScore compares a resource state with a new resource diff and returns a
-// match quality score. A non-negative score is the total number of attribute
-// matches. A negative score is the number of immutable attribute mismatches,
-// indicating that the resource would need to be re-created in order to match.
-func diffScore(s *tf.InstanceState, d *tf.InstanceDiff) int {
-	var neg, pos int
-	for at, ad := range d.Attributes {
-		// at may be missing from s.Attributes if it's an optional attribute.
-		// TODO: May need schema here to figure out what must be in attributes
-		if ad.NewComputed || strings.EqualFold(s.Attributes[at], ad.New) {
-			pos++
-		} else if ad.RequiresNew {
-			neg--
+// bypassCRUD replaces all CRUD functions in v with no-ops. It is used to apply
+// diffs via a schema.Provider without actually making any API calls.
+func bypassCRUD(v interface{}) {
+	noop := func(*schema.ResourceData, interface{}) error { return nil }
+	reflectwalk.Walk(v, newReplaceWalker(
+		schema.CreateFunc(func(r *schema.ResourceData, _ interface{}) error {
+			r.SetId("unknown")
+			return nil
+		}),
+		schema.ReadFunc(noop),
+		schema.UpdateFunc(noop),
+		schema.DeleteFunc(noop),
+		schema.ExistsFunc(nil),
+	))
+}
+
+// replaceWalker is a reflectwalk.PrimitiveWalker that replaces primitives of
+// specific types with new values.
+type replaceWalker map[reflect.Type]reflect.Value
+
+func newReplaceWalker(v ...interface{}) replaceWalker {
+	w := make(replaceWalker, len(v))
+	for _, e := range v {
+		w[reflect.TypeOf(e)] = reflect.ValueOf(e)
+	}
+	return w
+}
+
+func (w replaceWalker) Primitive(v reflect.Value) error {
+	if v.CanSet() {
+		if repl, ok := w[v.Type()]; ok {
+			v.Set(repl)
 		}
 	}
-	if neg < 0 {
-		return neg
-	}
-	return pos
+	return nil
 }
