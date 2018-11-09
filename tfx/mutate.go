@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"sort"
 
+	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
 )
@@ -55,11 +56,7 @@ func (c *Ctx) Mutate(s *tf.State, cfg *MutateCfg) (*tf.Diff, error) {
 			break
 		}
 		curState := root.Resources[k]
-		p := c.Schema(TypeProvider(curState.Type))
-		if p == nil {
-			continue
-		}
-		r := p.ResourcesMap[curState.Type]
+		p, r := c.ResourceSchema(curState.Type)
 		if r == nil {
 			continue
 		}
@@ -92,4 +89,45 @@ func (c *Ctx) Mutate(s *tf.State, cfg *MutateCfg) (*tf.Diff, error) {
 		d.Modules = append(d.Modules, ms.Diff)
 	}
 	return d, nil
+}
+
+// configFromResourceState creates a raw config from an existing state.
+func configFromResourceState(r *schema.Resource, s *tf.InstanceState) *config.RawConfig {
+	d := r.Data(s)
+	m := make(map[string]interface{}, len(r.Schema))
+	for k, rs := range r.Schema {
+		if !rs.Required && !rs.Optional {
+			continue // Computed-only field
+		}
+		if v, ok := d.GetOk(k); ok { // TODO: Should this use GetOkExists?
+			m[k] = makeRaw(v)
+		}
+	}
+	raw, err := config.NewRawConfig(m)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+// makeRaw converts a value from *schema.ResourceData into a representation that
+// can be used in *config.RawConfig.
+func makeRaw(v interface{}) interface{} {
+	switch v := v.(type) {
+	case []interface{}:
+		for i := range v {
+			v[i] = makeRaw(v[i])
+		}
+	case map[string]interface{}:
+		for k := range v {
+			v[k] = makeRaw(v[k])
+		}
+	case *schema.Set:
+		l := v.List()
+		for i := range l {
+			l[i] = makeRaw(l[i])
+		}
+		return l
+	}
+	return v
 }
