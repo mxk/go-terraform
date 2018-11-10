@@ -2,7 +2,6 @@ package tfx
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/hashicorp/go-multierror"
@@ -107,11 +106,9 @@ func (b *patchGraphBuilder) Build(path []string) (*tf.Graph, error) {
 
 func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
 	concreteResource := func(a *tf.NodeAbstractResource) dag.Vertex {
-		return &nodePatchableResource{
-			NodeApplyableResource: tf.NodeApplyableResource{
-				NodeAbstractResource: a,
-			},
-		}
+		return &nodePatchableResource{tf.NodeApplyableResource{
+			NodeAbstractResource: a,
+		}}
 	}
 	steps := b.ApplyGraphBuilder.Steps()
 	keep := steps[:0]
@@ -137,361 +134,37 @@ func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
 }
 
 // nodePatchableResource is a config-free NodeApplyableResource.
-type nodePatchableResource struct {
-	tf.NodeApplyableResource
-	Config struct{}
-}
+type nodePatchableResource struct{ tf.NodeApplyableResource }
 
 func (n *nodePatchableResource) EvalTree() tf.EvalNode {
-	addr := n.NodeAbstractResource.Addr
-
-	// stateId is the ID to put into the state
-	stateKey := tf.ResourceStateKey{
-		Name:  addr.Name,
-		Type:  addr.Type,
-		Mode:  addr.Mode,
-		Index: addr.Index,
+	// NodeApplyableResource.EvalTree() expects a valid Config pointer, so we
+	// create a mock config just for that.
+	raw, _ := config.NewRawConfig(nil)
+	n.Config = &config.Resource{
+		Mode:      n.Addr.Mode,
+		Name:      n.Addr.Name,
+		Type:      n.Addr.Type,
+		RawCount:  raw,
+		RawConfig: raw,
+		Provider:  n.ResourceState.Provider,
+		DependsOn: n.ResourceState.Dependencies,
 	}
-	stateId := stateKey.String()
-
-	// Build the instance info. More of this will be populated during eval
-	info := &tf.InstanceInfo{
-		Id:   stateId,
-		Type: addr.Type,
+	seq := n.NodeApplyableResource.EvalTree().(*tf.EvalSequence)
+	n.Config.RawCount = nil
+	n.Config.RawConfig = nil
+	nodes := seq.Nodes[:0]
+	for _, e := range seq.Nodes {
+		switch e.(type) {
+		case *tf.EvalInterpolate,
+			*tf.EvalReadDataDiff,
+			*tf.EvalValidateResource,
+			*tf.EvalDiff,
+			*tf.EvalCompareDiff:
+			// Filter out nodes that require a valid config
+			continue
+		}
+		nodes = append(nodes, e)
 	}
-
-	// Build the resource for eval
-	resource := &tf.Resource{
-		Name:       addr.Name,
-		Type:       addr.Type,
-		CountIndex: addr.Index,
-	}
-	if resource.CountIndex < 0 {
-		resource.CountIndex = 0
-	}
-
-	// Determine the dependencies for the state.
-	stateDeps := n.StateReferences()
-
-	// Eval info is different depending on what kind of resource this is
-	switch addr.Mode {
-	case config.ManagedResourceMode:
-		return n.evalTreeManagedResource(stateId, info, resource, stateDeps)
-	case config.DataResourceMode:
-		return n.evalTreeDataResource(stateId, info, resource, stateDeps)
-	default:
-		panic(fmt.Errorf("unsupported resource mode %s", addr.Mode))
-	}
-}
-
-func (n *nodePatchableResource) evalTreeDataResource(
-	stateId string, info *tf.InstanceInfo,
-	resource *tf.Resource, stateDeps []string) tf.EvalNode {
-	var provider tf.ResourceProvider
-	//var config *tf.ResourceConfig
-	var diff *tf.InstanceDiff
-	var state *tf.InstanceState
-
-	return &tf.EvalSequence{
-		Nodes: []tf.EvalNode{
-			// Build the instance info
-			&tf.EvalInstanceInfo{
-				Info: info,
-			},
-
-			// Get the saved diff for apply
-			&tf.EvalReadDiff{
-				Name: stateId,
-				Diff: &diff,
-			},
-
-			// Stop here if we don't actually have a diff
-			&tf.EvalIf{
-				If: func(ctx tf.EvalContext) (bool, error) {
-					if diff == nil {
-						return true, tf.EvalEarlyExitError{}
-					}
-
-					if diff.GetAttributesLen() == 0 {
-						return true, tf.EvalEarlyExitError{}
-					}
-
-					return true, nil
-				},
-				Then: tf.EvalNoop{},
-			},
-
-			// Normally we interpolate count as a preparation step before
-			// a DynamicExpand, but an apply graph has pre-expanded nodes
-			// and so the count would otherwise never be interpolated.
-			//
-			// This is redundant when there are multiple instances created
-			// from the same config (count > 1) but harmless since the
-			// underlying structures have mutexes to make this concurrency-safe.
-			//
-			// In most cases this isn't actually needed because we dealt with
-			// all of the counts during the plan walk, but we do it here
-			// for completeness because other code assumes that the
-			// final count is always available during interpolation.
-			//
-			// Here we are just populating the interpolated value in-place
-			// inside this RawConfig object, like we would in
-			// NodeAbstractCountResource.
-			/*&tf.EvalInterpolate{
-				Config:        n.Config.RawCount,
-				ContinueOnErr: true,
-			},*/
-
-			// We need to re-interpolate the config here, rather than
-			// just using the diff's values directly, because we've
-			// potentially learned more variable values during the
-			// apply pass that weren't known when the diff was produced.
-			/*&tf.EvalInterpolate{
-				Config:   n.Config.RawConfig.Copy(),
-				Resource: resource,
-				Output:   &config,
-			},*/
-
-			&tf.EvalGetProvider{
-				Name:   n.ResolvedProvider,
-				Output: &provider,
-			},
-
-			// Make a new diff with our newly-interpolated config.
-			/*&tf.EvalReadDataDiff{
-				Info:     info,
-				Config:   &config,
-				Previous: &diff,
-				Provider: &provider,
-				Output:   &diff,
-			},*/
-
-			&tf.EvalReadDataApply{
-				Info:     info,
-				Diff:     &diff,
-				Provider: &provider,
-				Output:   &state,
-			},
-
-			&tf.EvalWriteState{
-				Name:         stateId,
-				ResourceType: n.Addr.Type,
-				Provider:     n.ResolvedProvider,
-				Dependencies: stateDeps,
-				State:        &state,
-			},
-
-			// Clear the diff now that we've applied it, so
-			// later nodes won't see a diff that's now a no-op.
-			&tf.EvalWriteDiff{
-				Name: stateId,
-				Diff: nil,
-			},
-
-			&tf.EvalUpdateStateHook{},
-		},
-	}
-}
-
-func (n *nodePatchableResource) evalTreeManagedResource(
-	stateId string, info *tf.InstanceInfo,
-	resource *tf.Resource, stateDeps []string) tf.EvalNode {
-	// Declare a bunch of variables that are used for state during
-	// evaluation. Most of this are written to by-address below.
-	var provider tf.ResourceProvider
-	var diffApply *tf.InstanceDiff
-	var state *tf.InstanceState
-	//var resourceConfig *tf.ResourceConfig
-	var err error
-	var createNew bool
-	var createBeforeDestroyEnabled bool
-
-	return &tf.EvalSequence{
-		Nodes: []tf.EvalNode{
-			// Build the instance info
-			&tf.EvalInstanceInfo{
-				Info: info,
-			},
-
-			// Get the saved diff for apply
-			&tf.EvalReadDiff{
-				Name: stateId,
-				Diff: &diffApply,
-			},
-
-			// We don't want to do any destroys
-			&tf.EvalIf{
-				If: func(ctx tf.EvalContext) (bool, error) {
-					if diffApply == nil {
-						return true, tf.EvalEarlyExitError{}
-					}
-
-					if diffApply.GetDestroy() && diffApply.GetAttributesLen() == 0 {
-						return true, tf.EvalEarlyExitError{}
-					}
-
-					diffApply.SetDestroy(false)
-					return true, nil
-				},
-				Then: tf.EvalNoop{},
-			},
-
-			/*&tf.EvalIf{
-				If: func(ctx tf.EvalContext) (bool, error) {
-					destroy := false
-					if diffApply != nil {
-						destroy = diffApply.GetDestroy() || diffApply.RequiresNew()
-					}
-
-					createBeforeDestroyEnabled =
-						n.Config.Lifecycle.CreateBeforeDestroy &&
-							destroy
-
-					return createBeforeDestroyEnabled, nil
-				},
-				Then: &tf.EvalDeposeState{
-					Name: stateId,
-				},
-			},*/
-
-			// Normally we interpolate count as a preparation step before
-			// a DynamicExpand, but an apply graph has pre-expanded nodes
-			// and so the count would otherwise never be interpolated.
-			//
-			// This is redundant when there are multiple instances created
-			// from the same config (count > 1) but harmless since the
-			// underlying structures have mutexes to make this concurrency-safe.
-			//
-			// In most cases this isn't actually needed because we dealt with
-			// all of the counts during the plan walk, but we need to do this
-			// in order to support interpolation of resource counts from
-			// apply-time-interpolated expressions, such as those in
-			// "provisioner" blocks.
-			//
-			// Here we are just populating the interpolated value in-place
-			// inside this RawConfig object, like we would in
-			// NodeAbstractCountResource.
-			/*&tf.EvalInterpolate{
-				Config:        n.Config.RawCount,
-				ContinueOnErr: true,
-			},*/
-
-			/*&tf.EvalInterpolate{
-				Config:   n.Config.RawConfig.Copy(),
-				Resource: resource,
-				Output:   &resourceConfig,
-			},*/
-			/*&tf.EvalGetProvider{
-				Name:   n.ResolvedProvider,
-				Output: &provider,
-			},*/
-			/*&tf.EvalReadState{
-				Name:   stateId,
-				Output: &state,
-			},*/
-			// Re-run validation to catch any errors we missed, e.g. type
-			// mismatches on computed values.
-			/*&tf.EvalValidateResource{
-				Provider:       &provider,
-				Config:         &resourceConfig,
-				ResourceName:   n.Config.Name,
-				ResourceType:   n.Config.Type,
-				ResourceMode:   n.Config.Mode,
-				IgnoreWarnings: true,
-			},*/
-			/*&tf.EvalDiff{
-				Info:       info,
-				Config:     &resourceConfig,
-				Resource:   n.Config,
-				Provider:   &provider,
-				Diff:       &diffApply,
-				State:      &state,
-				OutputDiff: &diffApply,
-			},*/
-
-			// Get the saved diff
-			/*&tf.EvalReadDiff{
-				Name: stateId,
-				Diff: &diff,
-			},*/
-
-			// Compare the diffs
-			/*&tf.EvalCompareDiff{
-				Info: info,
-				One:  &diff,
-				Two:  &diffApply,
-			},*/
-
-			&tf.EvalGetProvider{
-				Name:   n.ResolvedProvider,
-				Output: &provider,
-			},
-			&tf.EvalReadState{
-				Name:   stateId,
-				Output: &state,
-			},
-			// Call pre-apply hook
-			&tf.EvalApplyPre{
-				Info:  info,
-				State: &state,
-				Diff:  &diffApply,
-			},
-			&tf.EvalApply{
-				Info:      info,
-				State:     &state,
-				Diff:      &diffApply,
-				Provider:  &provider,
-				Output:    &state,
-				Error:     &err,
-				CreateNew: &createNew,
-			},
-			&tf.EvalWriteState{
-				Name:         stateId,
-				ResourceType: n.Addr.Type,
-				Provider:     n.ResolvedProvider,
-				Dependencies: stateDeps,
-				State:        &state,
-			},
-			/*&tf.EvalApplyProvisioners{
-				Info:           info,
-				State:          &state,
-				Resource:       n.Config,
-				InterpResource: resource,
-				CreateNew:      &createNew,
-				Error:          &err,
-				When:           config.ProvisionerWhenCreate,
-			},*/
-			&tf.EvalIf{
-				If: func(ctx tf.EvalContext) (bool, error) {
-					return createBeforeDestroyEnabled && err != nil, nil
-				},
-				Then: &tf.EvalUndeposeState{
-					Name:  stateId,
-					State: &state,
-				},
-				Else: &tf.EvalWriteState{
-					Name:         stateId,
-					ResourceType: n.Addr.Type,
-					Provider:     n.ResolvedProvider,
-					Dependencies: stateDeps,
-					State:        &state,
-				},
-			},
-
-			// We clear the diff out here so that future nodes
-			// don't see a diff that is already complete. There
-			// is no longer a diff!
-			&tf.EvalWriteDiff{
-				Name: stateId,
-				Diff: nil,
-			},
-
-			&tf.EvalApplyPost{
-				Info:  info,
-				State: &state,
-				Error: &err,
-			},
-			&tf.EvalUpdateStateHook{},
-		},
-	}
+	seq.Nodes = nodes
+	return seq
 }
