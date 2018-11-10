@@ -88,7 +88,7 @@ func TestNormStateKeys(t *testing.T) {
 func TestStateTransform(t *testing.T) {
 	orig := NewState()
 	orig.Modules = []*tf.ModuleState{{
-		Path: []string{"root"},
+		Path: tf.RootModulePath,
 		Resources: map[string]*tf.ResourceState{
 			"a.a": {
 				Type:         "a",

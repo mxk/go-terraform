@@ -3,7 +3,6 @@ package tfx
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -90,60 +89,16 @@ func (c *Ctx) Refresh(s *tf.State) error {
 	return err
 }
 
-// Patch applies an unordered diff to an existing state. Unlike Terraform apply,
-// this does not build a graph to apply changes in the correct order, as that
-// would require a valid config from which the diff was generated. It simply
-// iterates over the diff and calls the provider's Apply implementation for each
-// modification.
+// Patch applies diff d to state s and returns the new state. Unlike the
+// standard apply operation, this one does not require a valid config. It works
+// by building and walking a modified apply graph that omits all config
+// references, which means that node evaluation may have slightly different
+// behavior. For example, resource lifecycle information is only available in
+// the config, so create-before-destroy behavior cannot be implemented.
 func (c *Ctx) Patch(s *tf.State, d *tf.Diff) (*tf.State, error) {
-	providerMap := make(map[string]tf.ResourceProvider)
-	provider := func(typ string) (p tf.ResourceProvider, err error) {
-		if p = providerMap[typ]; p == nil {
-			if p, err = c.provider(TypeProvider(typ)); err == nil {
-				providerMap[typ] = p
-			}
-		}
-		return
-	}
-	s = s.DeepCopy()
-	for _, m := range d.Modules {
-		var states map[string]*tf.ResourceState
-		if sm := s.ModuleByPath(m.Path); sm != nil {
-			states = sm.Resources
-		}
-		keys := make([]string, 0, len(m.Resources))
-		for k := range m.Resources {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		info := tf.InstanceInfo{ModulePath: m.Path}
-		for _, k := range keys {
-			rs := states[k]
-			if rs == nil {
-				sk, err := tf.ParseResourceStateKey(k)
-				if err != nil {
-					return s, err
-				}
-				rs = &tf.ResourceState{Type: sk.Type}
-			}
-			p, err := provider(rs.Type)
-			if err != nil {
-				return s, err
-			}
-			info.Id = k
-			info.Type = rs.Type
-			rs.Primary, err = p.Apply(&info, rs.Primary, m.Resources[k])
-			if err != nil {
-				return s, err
-			}
-			if rs.Primary == nil {
-				delete(states, k)
-			} else {
-				states[k] = rs
-			}
-		}
-	}
-	return s, nil
+	opts := c.opts(nil, s)
+	opts.Diff = d
+	return patch(&opts)
 }
 
 // Diff return the changes required to apply configuration t to state s. If s is
