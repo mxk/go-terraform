@@ -40,7 +40,7 @@ func patch(opts *tf.ContextOpts) (*tf.State, error) {
 		EnterPath(tf.RootModulePath).(*tf.BuiltinEvalContext).Components
 
 	// Build patch graph
-	graph, err := (&patchGraphBuilder{ApplyGraphBuilder: tf.ApplyGraphBuilder{
+	graph, err := (&patchGraphBuilder{tf.ApplyGraphBuilder{
 		Diff:         opts.Diff,
 		State:        state,
 		Providers:    comps.ResourceProviders(),
@@ -95,10 +95,7 @@ func (w *patchGraphWalker) EnterPath(path []string) tf.EvalContext {
 }
 
 // patchGraphBuilder is a config-free ApplyGraphBuilder.
-type patchGraphBuilder struct {
-	tf.ApplyGraphBuilder
-	Module struct{}
-}
+type patchGraphBuilder struct{ tf.ApplyGraphBuilder }
 
 func (b *patchGraphBuilder) Build(path []string) (*tf.Graph, error) {
 	return (&tf.BasicGraphBuilder{
@@ -109,13 +106,6 @@ func (b *patchGraphBuilder) Build(path []string) (*tf.Graph, error) {
 }
 
 func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
-	// Custom factory for creating providers.
-	concreteProvider := func(a *tf.NodeAbstractProvider) dag.Vertex {
-		return &tf.NodeApplyableProvider{
-			NodeAbstractProvider: a,
-		}
-	}
-
 	concreteResource := func(a *tf.NodeAbstractResource) dag.Vertex {
 		return &nodePatchableResource{
 			NodeApplyableResource: tf.NodeApplyableResource{
@@ -123,92 +113,27 @@ func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
 			},
 		}
 	}
+	steps := b.ApplyGraphBuilder.Steps()
+	keep := steps[:0]
+	for _, t := range steps {
+		switch t := t.(type) {
+		case *tf.DiffTransformer:
+			// Replace NodeApplyableResource with nodePatchableResource
+			t.Concrete = concreteResource
 
-	steps := []tf.GraphTransformer{
-		// Creates all the nodes represented in the diff.
-		&tf.DiffTransformer{
-			Concrete: concreteResource,
-			Diff:     b.Diff,
-			State:    b.State,
-		},
-
-		// Create orphan output nodes
-		//&tf.OrphanOutputTransformer{Module: b.Module, State: b.State},
-
-		// Attach the configuration to any resources
-		//&tf.AttachResourceConfigTransformer{Module: b.Module},
-
-		// Attach the state
-		&tf.AttachStateTransformer{State: b.State},
-
-		// Add providers
-		tf.TransformProviders(b.Providers, concreteProvider, nil),
-
-		// Destruction ordering
-		&tf.DestroyEdgeTransformer{State: b.State},
-		tf.GraphTransformIf(
-			func() bool { return !b.Destroy },
-			&tf.CBDEdgeTransformer{State: b.State},
-		),
-
-		// Provisioner-related transformations
-		&tf.MissingProvisionerTransformer{Provisioners: b.Provisioners},
-		&tf.ProvisionerTransformer{},
-
-		// Add root variables
-		//&tf.RootVariableTransformer{Module: b.Module},
-
-		// Add the local values
-		//&tf.LocalTransformer{Module: b.Module},
-
-		// Add the outputs
-		//&tf.OutputTransformer{Module: b.Module},
-
-		// Add module variables
-		//&tf.ModuleVariableTransformer{Module: b.Module},
-
-		// Remove modules no longer present in the config
-		//&tf.RemovedModuleTransformer{Module: b.Module, State: b.State},
-
-		// Connect references so ordering is correct
-		&tf.ReferenceTransformer{},
-
-		// Handle destroy time transformations for output and local values.
-		// Reverse the edges from outputs and locals, so that
-		// interpolations don't fail during destroy.
-		// Create a destroy node for outputs to remove them from the state.
-		// Prune unreferenced values, which may have interpolations that can't
-		// be resolved.
-		tf.GraphTransformIf(
-			func() bool { return b.Destroy },
-			tf.GraphTransformMulti(
-				&tf.DestroyValueReferenceTransformer{},
-				&tf.DestroyOutputTransformer{},
-				&tf.PruneUnusedValuesTransformer{},
-			),
-		),
-
-		// Add the node to fix the state count boundaries
-		&tf.CountBoundaryTransformer{},
-
-		// Target
-		&tf.TargetsTransformer{Targets: b.Targets},
-
-		// Close opened plugin connections
-		&tf.CloseProviderTransformer{},
-		&tf.CloseProvisionerTransformer{},
-
-		// Single root
-		&tf.RootTransformer{},
+		case *tf.OrphanOutputTransformer,
+			*tf.AttachResourceConfigTransformer,
+			*tf.RootVariableTransformer,
+			*tf.LocalTransformer,
+			*tf.OutputTransformer,
+			*tf.ModuleVariableTransformer,
+			*tf.RemovedModuleTransformer:
+			// Filter out transformers that require a valid config
+			continue
+		}
+		keep = append(keep, t)
 	}
-
-	if !b.DisableReduce {
-		// Perform the transitive reduction to make our graph a bit
-		// more sane if possible (it usually is possible).
-		steps = append(steps, &tf.TransitiveReductionTransformer{})
-	}
-
-	return steps
+	return keep
 }
 
 // nodePatchableResource is a config-free NodeApplyableResource.
