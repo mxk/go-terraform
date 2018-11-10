@@ -16,61 +16,91 @@ var (
 	walkApply     tf.Interpolater
 )
 
-// patch performs a direct apply operation that does not require a config.
+// patch performs an apply operation without a config and returns the new state.
+// ResourceProvider.Apply() only requires state and diff. Regular apply uses the
+// config to fill in some blanks, such as the lifecycle info, and to validate
+// the diff, which we don't want to do. So while the graph and evaluation have
+// to be modified, the core idea here is perfectly safe and (mostly) hack-free.
 func patch(opts *tf.ContextOpts) (*tf.State, error) {
+	if opts.Destroy {
+		// Need walkDestroy to implement this
+		panic("tfx: patch does not support pure destroy operations")
+	}
+
+	// Create context with a copy of the original state
 	orig, state := opts.State, opts.State.DeepCopy()
 	opts.State = state
 	c, err := tf.NewContext(opts)
 	if opts.State = orig; err != nil {
 		return nil, err
 	}
-	components := (&tf.ContextGraphWalker{Context: c}).
+
+	// HACK: Get contextComponentFactory
+	comps := (&tf.ContextGraphWalker{Context: c}).
 		EnterPath(tf.RootModulePath).(*tf.BuiltinEvalContext).Components
 
-	// Build graph
-	graph, err := (&PatchGraphBuilder{
-		Diff:      opts.Diff,
-		State:     opts.State,
-		Providers: components.ResourceProviders(),
-		Targets:   opts.Targets,
-		Destroy:   opts.Destroy,
-		Validate:  true,
-	}).Build(tf.RootModulePath)
+	// Build patch graph
+	graph, err := (&patchGraphBuilder{ApplyGraphBuilder: tf.ApplyGraphBuilder{
+		Diff:         opts.Diff,
+		State:        state,
+		Providers:    comps.ResourceProviders(),
+		Provisioners: comps.ResourceProvisioners(),
+		Targets:      opts.Targets,
+		Destroy:      opts.Destroy,
+		Validate:     true,
+	}}).Build(tf.RootModulePath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Walk graph
+	// HACK: Get walkApply value
 	walkApplyOnce.Do(func() {
-		// Hack to get walkApply, local context avoids state deep copy
-		var c tf.Context
+		var c tf.Context // Avoid deep copy of the real state
 		walkApply.Operation = c.Interpolater().Operation
 	})
-	walker := &tf.ContextGraphWalker{
+
+	// Walk the graph
+	w := &patchGraphWalker{ContextGraphWalker: tf.ContextGraphWalker{
 		Context:     c,
 		Operation:   walkApply.Operation,
 		StopContext: context.Background(),
-	}
-	err = graph.Walk(walker)
-	if len(walker.ValidationErrors) > 0 {
-		err = multierror.Append(err, walker.ValidationErrors...)
+	}}
+	if err = graph.Walk(w); len(w.ValidationErrors) > 0 {
+		err = multierror.Append(err, w.ValidationErrors...)
 	}
 
-	// TODO: Stop providers and provisioners
+	// Stop providers and provisioners
+	for _, p := range w.rootCtx.ProviderCache {
+		p.Stop()
+	}
+	for _, p := range w.rootCtx.ProvisionerCache {
+		p.Stop()
+	}
 	return state, err
 }
 
-type PatchGraphBuilder struct {
-	Diff          *tf.Diff
-	State         *tf.State
-	Providers     []string
-	Targets       []string
-	DisableReduce bool
-	Destroy       bool
-	Validate      bool
+// patchGraphWalker intercepts EnterPath calls to save a reference to the root
+// EvalContext, which exposes ContextGraphWalker state.
+type patchGraphWalker struct {
+	tf.ContextGraphWalker
+	rootCtx *tf.BuiltinEvalContext
 }
 
-func (b *PatchGraphBuilder) Build(path []string) (*tf.Graph, error) {
+func (w *patchGraphWalker) EnterPath(path []string) tf.EvalContext {
+	ctx := w.ContextGraphWalker.EnterPath(path)
+	if w.rootCtx == nil {
+		w.rootCtx = ctx.(*tf.BuiltinEvalContext)
+	}
+	return ctx
+}
+
+// patchGraphBuilder is a config-free ApplyGraphBuilder.
+type patchGraphBuilder struct {
+	tf.ApplyGraphBuilder
+	Module struct{}
+}
+
+func (b *patchGraphBuilder) Build(path []string) (*tf.Graph, error) {
 	return (&tf.BasicGraphBuilder{
 		Steps:    b.Steps(),
 		Validate: b.Validate,
@@ -78,19 +108,22 @@ func (b *PatchGraphBuilder) Build(path []string) (*tf.Graph, error) {
 	}).Build(path)
 }
 
-func (b *PatchGraphBuilder) Steps() []tf.GraphTransformer {
+func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
+	// Custom factory for creating providers.
 	concreteProvider := func(a *tf.NodeAbstractProvider) dag.Vertex {
 		return &tf.NodeApplyableProvider{
 			NodeAbstractProvider: a,
 		}
 	}
+
 	concreteResource := func(a *tf.NodeAbstractResource) dag.Vertex {
-		return &NodePatchableResource{
+		return &nodePatchableResource{
 			NodeApplyableResource: tf.NodeApplyableResource{
 				NodeAbstractResource: a,
 			},
 		}
 	}
+
 	steps := []tf.GraphTransformer{
 		// Creates all the nodes represented in the diff.
 		&tf.DiffTransformer{
@@ -98,6 +131,12 @@ func (b *PatchGraphBuilder) Steps() []tf.GraphTransformer {
 			Diff:     b.Diff,
 			State:    b.State,
 		},
+
+		// Create orphan output nodes
+		//&tf.OrphanOutputTransformer{Module: b.Module, State: b.State},
+
+		// Attach the configuration to any resources
+		//&tf.AttachResourceConfigTransformer{Module: b.Module},
 
 		// Attach the state
 		&tf.AttachStateTransformer{State: b.State},
@@ -112,10 +151,24 @@ func (b *PatchGraphBuilder) Steps() []tf.GraphTransformer {
 			&tf.CBDEdgeTransformer{State: b.State},
 		),
 
-		// TODO: Should provisioners be here at all?
-
 		// Provisioner-related transformations
+		&tf.MissingProvisionerTransformer{Provisioners: b.Provisioners},
 		&tf.ProvisionerTransformer{},
+
+		// Add root variables
+		//&tf.RootVariableTransformer{Module: b.Module},
+
+		// Add the local values
+		//&tf.LocalTransformer{Module: b.Module},
+
+		// Add the outputs
+		//&tf.OutputTransformer{Module: b.Module},
+
+		// Add module variables
+		//&tf.ModuleVariableTransformer{Module: b.Module},
+
+		// Remove modules no longer present in the config
+		//&tf.RemovedModuleTransformer{Module: b.Module, State: b.State},
 
 		// Connect references so ordering is correct
 		&tf.ReferenceTransformer{},
@@ -148,30 +201,33 @@ func (b *PatchGraphBuilder) Steps() []tf.GraphTransformer {
 		// Single root
 		&tf.RootTransformer{},
 	}
+
 	if !b.DisableReduce {
 		// Perform the transitive reduction to make our graph a bit
 		// more sane if possible (it usually is possible).
 		steps = append(steps, &tf.TransitiveReductionTransformer{})
 	}
+
 	return steps
 }
 
-type NodePatchableResource struct {
+// nodePatchableResource is a config-free NodeApplyableResource.
+type nodePatchableResource struct {
 	tf.NodeApplyableResource
 	Config struct{}
 }
 
-func (n *NodePatchableResource) EvalTree() tf.EvalNode {
+func (n *nodePatchableResource) EvalTree() tf.EvalNode {
 	addr := n.NodeAbstractResource.Addr
 
 	// stateId is the ID to put into the state
-	k := tf.ResourceStateKey{
+	stateKey := tf.ResourceStateKey{
 		Name:  addr.Name,
 		Type:  addr.Type,
 		Mode:  addr.Mode,
 		Index: addr.Index,
 	}
-	stateId := k.String()
+	stateId := stateKey.String()
 
 	// Build the instance info. More of this will be populated during eval
 	info := &tf.InstanceInfo{
@@ -195,21 +251,19 @@ func (n *NodePatchableResource) EvalTree() tf.EvalNode {
 	// Eval info is different depending on what kind of resource this is
 	switch addr.Mode {
 	case config.ManagedResourceMode:
-		return n.evalTreeManagedResource(
-			stateId, info, resource, stateDeps,
-		)
+		return n.evalTreeManagedResource(stateId, info, resource, stateDeps)
 	case config.DataResourceMode:
-		return n.evalTreeDataResource(
-			stateId, info, resource, stateDeps)
+		return n.evalTreeDataResource(stateId, info, resource, stateDeps)
 	default:
 		panic(fmt.Errorf("unsupported resource mode %s", addr.Mode))
 	}
 }
 
-func (n *NodePatchableResource) evalTreeDataResource(
+func (n *nodePatchableResource) evalTreeDataResource(
 	stateId string, info *tf.InstanceInfo,
 	resource *tf.Resource, stateDeps []string) tf.EvalNode {
 	var provider tf.ResourceProvider
+	//var config *tf.ResourceConfig
 	var diff *tf.InstanceDiff
 	var state *tf.InstanceState
 
@@ -242,10 +296,50 @@ func (n *NodePatchableResource) evalTreeDataResource(
 				Then: tf.EvalNoop{},
 			},
 
+			// Normally we interpolate count as a preparation step before
+			// a DynamicExpand, but an apply graph has pre-expanded nodes
+			// and so the count would otherwise never be interpolated.
+			//
+			// This is redundant when there are multiple instances created
+			// from the same config (count > 1) but harmless since the
+			// underlying structures have mutexes to make this concurrency-safe.
+			//
+			// In most cases this isn't actually needed because we dealt with
+			// all of the counts during the plan walk, but we do it here
+			// for completeness because other code assumes that the
+			// final count is always available during interpolation.
+			//
+			// Here we are just populating the interpolated value in-place
+			// inside this RawConfig object, like we would in
+			// NodeAbstractCountResource.
+			/*&tf.EvalInterpolate{
+				Config:        n.Config.RawCount,
+				ContinueOnErr: true,
+			},*/
+
+			// We need to re-interpolate the config here, rather than
+			// just using the diff's values directly, because we've
+			// potentially learned more variable values during the
+			// apply pass that weren't known when the diff was produced.
+			/*&tf.EvalInterpolate{
+				Config:   n.Config.RawConfig.Copy(),
+				Resource: resource,
+				Output:   &config,
+			},*/
+
 			&tf.EvalGetProvider{
 				Name:   n.ResolvedProvider,
 				Output: &provider,
 			},
+
+			// Make a new diff with our newly-interpolated config.
+			/*&tf.EvalReadDataDiff{
+				Info:     info,
+				Config:   &config,
+				Previous: &diff,
+				Provider: &provider,
+				Output:   &diff,
+			},*/
 
 			&tf.EvalReadDataApply{
 				Info:     info,
@@ -256,7 +350,7 @@ func (n *NodePatchableResource) evalTreeDataResource(
 
 			&tf.EvalWriteState{
 				Name:         stateId,
-				ResourceType: n.ResourceState.Type,
+				ResourceType: n.Addr.Type,
 				Provider:     n.ResolvedProvider,
 				Dependencies: stateDeps,
 				State:        &state,
@@ -274,14 +368,15 @@ func (n *NodePatchableResource) evalTreeDataResource(
 	}
 }
 
-func (n *NodePatchableResource) evalTreeManagedResource(
+func (n *nodePatchableResource) evalTreeManagedResource(
 	stateId string, info *tf.InstanceInfo,
 	resource *tf.Resource, stateDeps []string) tf.EvalNode {
 	// Declare a bunch of variables that are used for state during
 	// evaluation. Most of this are written to by-address below.
 	var provider tf.ResourceProvider
-	var diff *tf.InstanceDiff
+	var diffApply *tf.InstanceDiff
 	var state *tf.InstanceState
+	//var resourceConfig *tf.ResourceConfig
 	var err error
 	var createNew bool
 	var createBeforeDestroyEnabled bool
@@ -296,35 +391,111 @@ func (n *NodePatchableResource) evalTreeManagedResource(
 			// Get the saved diff for apply
 			&tf.EvalReadDiff{
 				Name: stateId,
-				Diff: &diff,
+				Diff: &diffApply,
 			},
 
 			// We don't want to do any destroys
 			&tf.EvalIf{
 				If: func(ctx tf.EvalContext) (bool, error) {
-					if diff == nil {
+					if diffApply == nil {
 						return true, tf.EvalEarlyExitError{}
 					}
 
-					if diff.GetDestroy() && diff.GetAttributesLen() == 0 {
+					if diffApply.GetDestroy() && diffApply.GetAttributesLen() == 0 {
 						return true, tf.EvalEarlyExitError{}
 					}
 
-					diff.SetDestroy(false)
+					diffApply.SetDestroy(false)
 					return true, nil
 				},
 				Then: tf.EvalNoop{},
 			},
 
-			// TODO: Is lifecycle info saved in the state?
-			&tf.EvalIf{
+			/*&tf.EvalIf{
 				If: func(ctx tf.EvalContext) (bool, error) {
-					return false, nil
+					destroy := false
+					if diffApply != nil {
+						destroy = diffApply.GetDestroy() || diffApply.RequiresNew()
+					}
+
+					createBeforeDestroyEnabled =
+						n.Config.Lifecycle.CreateBeforeDestroy &&
+							destroy
+
+					return createBeforeDestroyEnabled, nil
 				},
 				Then: &tf.EvalDeposeState{
 					Name: stateId,
 				},
-			},
+			},*/
+
+			// Normally we interpolate count as a preparation step before
+			// a DynamicExpand, but an apply graph has pre-expanded nodes
+			// and so the count would otherwise never be interpolated.
+			//
+			// This is redundant when there are multiple instances created
+			// from the same config (count > 1) but harmless since the
+			// underlying structures have mutexes to make this concurrency-safe.
+			//
+			// In most cases this isn't actually needed because we dealt with
+			// all of the counts during the plan walk, but we need to do this
+			// in order to support interpolation of resource counts from
+			// apply-time-interpolated expressions, such as those in
+			// "provisioner" blocks.
+			//
+			// Here we are just populating the interpolated value in-place
+			// inside this RawConfig object, like we would in
+			// NodeAbstractCountResource.
+			/*&tf.EvalInterpolate{
+				Config:        n.Config.RawCount,
+				ContinueOnErr: true,
+			},*/
+
+			/*&tf.EvalInterpolate{
+				Config:   n.Config.RawConfig.Copy(),
+				Resource: resource,
+				Output:   &resourceConfig,
+			},*/
+			/*&tf.EvalGetProvider{
+				Name:   n.ResolvedProvider,
+				Output: &provider,
+			},*/
+			/*&tf.EvalReadState{
+				Name:   stateId,
+				Output: &state,
+			},*/
+			// Re-run validation to catch any errors we missed, e.g. type
+			// mismatches on computed values.
+			/*&tf.EvalValidateResource{
+				Provider:       &provider,
+				Config:         &resourceConfig,
+				ResourceName:   n.Config.Name,
+				ResourceType:   n.Config.Type,
+				ResourceMode:   n.Config.Mode,
+				IgnoreWarnings: true,
+			},*/
+			/*&tf.EvalDiff{
+				Info:       info,
+				Config:     &resourceConfig,
+				Resource:   n.Config,
+				Provider:   &provider,
+				Diff:       &diffApply,
+				State:      &state,
+				OutputDiff: &diffApply,
+			},*/
+
+			// Get the saved diff
+			/*&tf.EvalReadDiff{
+				Name: stateId,
+				Diff: &diff,
+			},*/
+
+			// Compare the diffs
+			/*&tf.EvalCompareDiff{
+				Info: info,
+				One:  &diff,
+				Two:  &diffApply,
+			},*/
 
 			&tf.EvalGetProvider{
 				Name:   n.ResolvedProvider,
@@ -334,17 +505,16 @@ func (n *NodePatchableResource) evalTreeManagedResource(
 				Name:   stateId,
 				Output: &state,
 			},
-
 			// Call pre-apply hook
 			&tf.EvalApplyPre{
 				Info:  info,
 				State: &state,
-				Diff:  &diff,
+				Diff:  &diffApply,
 			},
 			&tf.EvalApply{
 				Info:      info,
 				State:     &state,
-				Diff:      &diff,
+				Diff:      &diffApply,
 				Provider:  &provider,
 				Output:    &state,
 				Error:     &err,
@@ -352,11 +522,20 @@ func (n *NodePatchableResource) evalTreeManagedResource(
 			},
 			&tf.EvalWriteState{
 				Name:         stateId,
-				ResourceType: n.ResourceState.Type,
+				ResourceType: n.Addr.Type,
 				Provider:     n.ResolvedProvider,
 				Dependencies: stateDeps,
 				State:        &state,
 			},
+			/*&tf.EvalApplyProvisioners{
+				Info:           info,
+				State:          &state,
+				Resource:       n.Config,
+				InterpResource: resource,
+				CreateNew:      &createNew,
+				Error:          &err,
+				When:           config.ProvisionerWhenCreate,
+			},*/
 			&tf.EvalIf{
 				If: func(ctx tf.EvalContext) (bool, error) {
 					return createBeforeDestroyEnabled && err != nil, nil
@@ -367,7 +546,7 @@ func (n *NodePatchableResource) evalTreeManagedResource(
 				},
 				Else: &tf.EvalWriteState{
 					Name:         stateId,
-					ResourceType: n.ResourceState.Type,
+					ResourceType: n.Addr.Type,
 					Provider:     n.ResolvedProvider,
 					Dependencies: stateDeps,
 					State:        &state,
