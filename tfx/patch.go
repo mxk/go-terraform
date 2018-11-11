@@ -146,8 +146,10 @@ func (n *nodePatchableResource) EvalTree() tf.EvalNode {
 		Type:      n.Addr.Type,
 		RawCount:  raw,
 		RawConfig: raw,
-		Provider:  n.ResourceState.Provider,
-		DependsOn: n.ResourceState.Dependencies,
+	}
+	if n.ResourceState != nil {
+		n.Config.Provider = n.ResourceState.Provider
+		n.Config.DependsOn = n.ResourceState.Dependencies
 	}
 	seq := n.NodeApplyableResource.EvalTree().(*tf.EvalSequence)
 	n.Config.RawCount = nil
