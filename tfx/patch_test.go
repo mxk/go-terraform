@@ -1,7 +1,6 @@
 package tfx
 
 import (
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -41,7 +40,7 @@ func TestPatch(t *testing.T) {
 
 		d, err := ctx.Diff(m, s)
 		require.NoError(t, err, "%s", config)
-		fmt.Printf("%s:\n%v\n\n", config, d)
+		//fmt.Printf("%s:\n%v\n\n", config, d)
 
 		want, err := ctx.Apply(m, s)
 		require.True(t, want != s, "%s", config)
