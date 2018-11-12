@@ -40,7 +40,7 @@ func TestDiff(t *testing.T) {
 	}
 	var c Ctx
 	c.SetProvider("azurerm", p)
-	dir := testDataDir()
+	dir := testDataDir("diff")
 	m, err := LoadModule(filepath.Join(dir, "cfg.tf"))
 	require.NoError(t, err)
 	for _, tc := range tests {
@@ -52,10 +52,11 @@ func TestDiff(t *testing.T) {
 	}
 }
 
-func testDataDir() string {
+func testDataDir(elem ...string) string {
 	_, file, _, _ := runtime.Caller(1)
 	if file != "" {
-		return filepath.Join(filepath.Dir(file), "testdata")
+		root := []string{filepath.Dir(file), "testdata"}
+		return filepath.Join(append(root, elem...)...)
 	}
 	panic("testdata directory not found")
 }

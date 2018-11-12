@@ -2,6 +2,8 @@ package tfx
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sync"
 
 	"github.com/hashicorp/go-multierror"
@@ -111,6 +113,9 @@ func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
 		}}
 	}
 	steps := b.ApplyGraphBuilder.Steps()
+	multi := reflect.TypeOf(tf.GraphTransformMulti())
+
+	// Filter transformers, keeping only those that do not require a config
 	keep := steps[:0]
 	for _, t := range steps {
 		switch t := t.(type) {
@@ -118,15 +123,33 @@ func (b *patchGraphBuilder) Steps() []tf.GraphTransformer {
 			// Replace NodeApplyableResource with nodePatchableResource
 			t.Concrete = concreteResource
 
-		case *tf.OrphanOutputTransformer,
+		case *tf.AttachStateTransformer,
+			*tf.DestroyEdgeTransformer,
+			*tf.CBDEdgeTransformer,
+			*tf.MissingProvisionerTransformer,
+			*tf.ProvisionerTransformer,
+			*tf.ReferenceTransformer,
+			*tf.CountBoundaryTransformer,
+			*tf.TargetsTransformer,
+			*tf.CloseProviderTransformer,
+			*tf.CloseProvisionerTransformer,
+			*tf.RootTransformer,
+			*tf.TransitiveReductionTransformer:
+
+		case nil,
+			*tf.OrphanOutputTransformer,
 			*tf.AttachResourceConfigTransformer,
 			*tf.RootVariableTransformer,
 			*tf.LocalTransformer,
 			*tf.OutputTransformer,
 			*tf.ModuleVariableTransformer,
 			*tf.RemovedModuleTransformer:
-			// Filter out transformers that require a valid config
 			continue
+
+		default:
+			if reflect.TypeOf(t) != multi {
+				panic(fmt.Sprintf("tfx: unknown GraphTransformer type %T", t))
+			}
 		}
 		keep = append(keep, t)
 	}
@@ -138,8 +161,9 @@ type nodePatchableResource struct{ tf.NodeApplyableResource }
 
 func (n *nodePatchableResource) EvalTree() tf.EvalNode {
 	// NodeApplyableResource.EvalTree() expects a valid Config pointer, so we
-	// create a mock config just for that.
-	raw, _ := config.NewRawConfig(nil)
+	// create a minimal config just for that. RawConfig is only needed for
+	// ReferencesFromConfig call.
+	raw := new(config.RawConfig)
 	n.Config = &config.Resource{
 		Mode:      n.Addr.Mode,
 		Name:      n.Addr.Name,
@@ -154,19 +178,38 @@ func (n *nodePatchableResource) EvalTree() tf.EvalNode {
 	seq := n.NodeApplyableResource.EvalTree().(*tf.EvalSequence)
 	n.Config.RawCount = nil
 	n.Config.RawConfig = nil
-	nodes := seq.Nodes[:0]
+
+	// Filter nodes, keeping only those that do not require a config
+	keep := seq.Nodes[:0]
 	for _, e := range seq.Nodes {
 		switch e.(type) {
-		case *tf.EvalInterpolate,
-			*tf.EvalReadDataDiff,
+		case *tf.EvalInstanceInfo,
+			*tf.EvalReadDiff,
+			*tf.EvalIf,
+			*tf.EvalGetProvider,
+			*tf.EvalReadDataApply,
+			*tf.EvalReadState,
+			*tf.EvalApplyPre,
+			*tf.EvalApply,
+			*tf.EvalWriteState,
+			*tf.EvalApplyProvisioners,
+			*tf.EvalWriteDiff,
+			*tf.EvalApplyPost,
+			*tf.EvalUpdateStateHook:
+
+		case nil,
+			*tf.EvalInterpolate,
 			*tf.EvalValidateResource,
+			*tf.EvalReadDataDiff,
 			*tf.EvalDiff,
 			*tf.EvalCompareDiff:
-			// Filter out nodes that require a valid config
 			continue
+
+		default:
+			panic(fmt.Sprintf("tfx: unknown EvalNode type %T", e))
 		}
-		nodes = append(nodes, e)
+		keep = append(keep, e)
 	}
-	seq.Nodes = nodes
+	seq.Nodes = keep
 	return seq
 }

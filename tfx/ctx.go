@@ -75,18 +75,28 @@ func (c *Ctx) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
 	return nil, nil
 }
 
-// Refresh updates the state of all resources in s.
-func (c *Ctx) Refresh(s *tf.State) error {
+// Refresh updates the state of all resources in s and returns the new state.
+func (c *Ctx) Refresh(s *tf.State) (*tf.State, error) {
 	opts := c.opts(module.NewEmptyTree(), s)
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	t, err := tc.Refresh()
-	if err == nil {
-		*s = *t
+	return tc.Refresh()
+}
+
+// Apply does a plan/apply operation to ensure that state s matches config t and
+// returns the new state.
+func (c *Ctx) Apply(t *module.Tree, s *tf.State) (*tf.State, error) {
+	opts := c.opts(t, s)
+	tc, err := tf.NewContext(&opts)
+	if err != nil {
+		return nil, err
 	}
-	return err
+	if _, err = tc.Plan(); err != nil {
+		return nil, err
+	}
+	return tc.Apply()
 }
 
 // Patch applies diff d to state s and returns the new state. Unlike the
