@@ -2,8 +2,8 @@ package tfx
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,10 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMain(m *testing.M) {
+	DisableLogging()
+	os.Exit(m.Run())
+}
+
 func TestLog(t *testing.T) {
 	defer func() {
+		DisableLogging()
 		log.SetFlags(log.LstdFlags)
-		log.SetOutput(ioutil.Discard)
 	}()
 	var b strings.Builder
 	log.SetFlags(0)

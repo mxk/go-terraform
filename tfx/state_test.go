@@ -1,9 +1,6 @@
 package tfx
 
 import (
-	"io/ioutil"
-	"log"
-	"os"
 	"testing"
 
 	"github.com/LuminalHQ/cloudcover/x/az"
@@ -11,11 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestMain(m *testing.M) {
-	log.SetOutput(ioutil.Discard)
-	os.Exit(m.Run())
-}
 
 func TestNewState(t *testing.T) {
 	have := NewState()

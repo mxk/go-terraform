@@ -11,6 +11,12 @@ import (
 	"github.com/hashicorp/terraform/helper/logging"
 )
 
+// DisableLogging disables all Terraform logging, while allowing other messages
+// through.
+func DisableLogging() {
+	SetLogFilter(os.Stderr, "")
+}
+
 // SetLogFilter configures Terraform log filter. Since all Terraform components
 // use the default logger (ugh... why?!?), this may affect other code as well.
 func SetLogFilter(w io.Writer, level string) error {
