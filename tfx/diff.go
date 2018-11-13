@@ -24,6 +24,18 @@ func ReadPlanFile(file string) (*tf.Plan, error) {
 	return tf.ReadPlan(r)
 }
 
+// WritePlanFile writes plan p to file in binary format.
+func WritePlanFile(file string, p *tf.Plan) error {
+	if isStdio(file) {
+		return tf.WritePlan(p, os.Stdout)
+	}
+	var b bytes.Buffer
+	if err := tf.WritePlan(p, &b); err != nil {
+		return err
+	}
+	return ioutil.WriteFile(file, b.Bytes(), 0666)
+}
+
 // ReadDiffFile reads Terraform diff from the specified file. It supports both
 // JSON-encoded diffs and plan files.
 func ReadDiffFile(file string) (*tf.Diff, error) {
@@ -239,7 +251,7 @@ func diffScore(s *tf.InstanceState, d *tf.InstanceDiff) int {
 
 // normDiff normalizes a diff by removing empty modules and sorting those that
 // remain by path.
-func normDiff(d *tf.Diff) *tf.Diff {
+func normDiff(d *tf.Diff) {
 	keep := d.Modules[:0]
 	for _, m := range d.Modules {
 		if !m.Empty() {
@@ -250,7 +262,6 @@ func normDiff(d *tf.Diff) *tf.Diff {
 		return lessModulePath(keep[i].Path, keep[j].Path)
 	})
 	d.Modules = keep
-	return d
 }
 
 // lessModulePath returns true if module path a should be sorted before path b.

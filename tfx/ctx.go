@@ -114,16 +114,26 @@ func (c *Ctx) Patch(s *tf.State, d *tf.Diff) (*tf.State, error) {
 // Diff return the changes required to apply configuration t to state s. If s is
 // nil, an empty state is assumed.
 func (c *Ctx) Diff(t *module.Tree, s *tf.State) (*tf.Diff, error) {
+	p, err := c.Plan(t, s)
+	if err == nil {
+		return p.Diff, nil
+	}
+	return nil, err
+}
+
+// Plan returns a plan to apply configuration t to state s. If s is nil, an
+// empty state is assumed.
+func (c *Ctx) Plan(t *module.Tree, s *tf.State) (*tf.Plan, error) {
 	opts := c.opts(t, s)
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
 	}
 	p, err := tc.Plan()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		normDiff(p.Diff)
 	}
-	return normDiff(p.Diff), nil
+	return p, err
 }
 
 // ResourceForID returns a skeleton resource state for the specified provider
