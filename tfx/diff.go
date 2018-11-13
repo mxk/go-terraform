@@ -87,6 +87,10 @@ func WriteDiff(w io.Writer, d *tf.Diff) error {
 			if !v {
 				return nil
 			}
+		case float64:
+			if v == 0 {
+				return nil
+			}
 		case string:
 			if v == "" {
 				return nil
@@ -106,6 +110,7 @@ func WriteDiff(w io.Writer, d *tf.Diff) error {
 				if e = minify(e); e != nil {
 					v[k] = e
 				} else {
+					// TODO: This may cause problems for Meta and NewExtra
 					delete(v, k)
 				}
 			}
@@ -114,8 +119,6 @@ func WriteDiff(w io.Writer, d *tf.Diff) error {
 			}
 		case nil:
 		default:
-			// float64 is omitted since it's not currently used by Diff and may
-			// require special handling.
 			panic(fmt.Sprintf("tfx: unsupported type %T", v))
 		}
 		return v
