@@ -3,6 +3,7 @@ package tfx
 import (
 	"math/rand"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -89,6 +90,19 @@ func (c *Ctx) Mutate(s *tf.State, cfg *MutateCfg) (*tf.Diff, error) {
 		d.Modules = append(d.Modules, ms.Diff)
 	}
 	return d, nil
+}
+
+// RandID returns a random alphanumeric (base62) string of length n with the
+// first character always an upper-case letter.
+func (ms *MutateState) RandID(n int) string {
+	const b62 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	var b strings.Builder
+	b.Grow(n)
+	for max := 26; n > 0; n-- {
+		b.WriteByte(b62[ms.Rand.Intn(max)])
+		max = len(b62)
+	}
+	return b.String()
 }
 
 // configFromResourceState creates a raw config from an existing state.
