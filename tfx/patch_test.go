@@ -13,7 +13,7 @@ import (
 
 func TestPatch(t *testing.T) {
 	root := testDataDir("patch")
-	commonState, err := ReadState(filepath.Join(root, "common.tfstate"))
+	commonState, err := ReadStateFile(filepath.Join(root, "common.tfstate"))
 	require.NoError(t, err)
 
 	files, err := ioutil.ReadDir(root)
@@ -30,7 +30,7 @@ func TestPatch(t *testing.T) {
 		m, err := LoadModule(filepath.Join(root, config))
 		require.NoError(t, err, "%s", config)
 
-		s, err := ReadState(filepath.Join(root, config+"state"))
+		s, err := ReadStateFile(filepath.Join(root, config+"state"))
 		if err != nil {
 			if !os.IsNotExist(err) {
 				require.NoError(t, err)

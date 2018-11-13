@@ -28,7 +28,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		if err = tfx.WriteState(config+"state", s); err != nil {
+		if err = tfx.WriteStateFile(config+"state", s); err != nil {
 			panic(err)
 		}
 	}

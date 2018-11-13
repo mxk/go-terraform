@@ -44,7 +44,7 @@ func TestDiff(t *testing.T) {
 	m, err := LoadModule(filepath.Join(dir, "cfg.tf"))
 	require.NoError(t, err)
 	for _, tc := range tests {
-		s, err := ReadState(filepath.Join(dir, tc.state))
+		s, err := ReadStateFile(filepath.Join(dir, tc.state))
 		require.NoError(t, err)
 		d, err := c.Diff(m, s)
 		require.NoError(t, err)

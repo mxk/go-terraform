@@ -2,7 +2,6 @@ package tfx
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"regexp"
 	"sort"
@@ -15,6 +14,10 @@ import (
 	"github.com/mitchellh/copystructure"
 )
 
+// DefaultStateFile is the name of the default Terraform state file. It is
+// redefined here to avoid importing the entire command package.
+const DefaultStateFile = "terraform.tfstate"
+
 // NewState returns an initialized empty state.
 func NewState() *tf.State {
 	// Don't use tf.NewState to avoid logging output
@@ -26,27 +29,19 @@ func NewState() *tf.State {
 	return s
 }
 
-// ReadState reads Terraform state from the specified file ("" or "-" mean
-// stdin).
-func ReadState(file string) (*tf.State, error) {
-	var r io.Reader
-	if file == "" || file == "-" {
-		r = os.Stdin
-	} else {
-		f, err := os.Open(file)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		r = f
+// ReadStateFile reads Terraform state from the specified file.
+func ReadStateFile(file string) (*tf.State, error) {
+	r, err := open(file)
+	if err != nil {
+		return nil, err
 	}
+	defer r.Close()
 	return tf.ReadState(r)
 }
 
-// WriteState writes Terraform state to the specified file ("" or "-" mean
-// stdout).
-func WriteState(file string, s *tf.State) error {
-	if file == "" || file == "-" {
+// WriteStateFile writes Terraform state to the specified file.
+func WriteStateFile(file string, s *tf.State) error {
+	if isStdio(file) {
 		return tf.WriteState(s, os.Stdout)
 	}
 	ls := state.LocalState{Path: file}

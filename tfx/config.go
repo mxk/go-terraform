@@ -18,7 +18,7 @@ func LoadModule(path string) (*module.Tree, error) {
 	var err error
 	if path == "" || path == "-" {
 		var b []byte
-		b, err = ioutil.ReadAll(io.LimitReader(os.Stdin, 64*1024*1024))
+		b, err = ioutil.ReadAll(io.LimitReader(os.Stdin, stdinLimit))
 		if err == nil {
 			c, err = config.LoadJSON(json.RawMessage(b))
 		}

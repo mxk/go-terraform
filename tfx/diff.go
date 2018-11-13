@@ -1,12 +1,130 @@
 package tfx
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
+	"os"
 	"sort"
 	"strings"
 
 	tf "github.com/hashicorp/terraform/terraform"
 )
+
+// ReadPlanFile reads Terraform plan from the specified file.
+func ReadPlanFile(file string) (*tf.Plan, error) {
+	r, err := open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return tf.ReadPlan(r)
+}
+
+// ReadDiffFile reads Terraform diff from the specified file. It supports both
+// JSON-encoded diffs and plan files.
+func ReadDiffFile(file string) (*tf.Diff, error) {
+	r, err := open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return ReadDiff(r)
+}
+
+// ReadDiff reads Terraform diff from r. It supports both JSON-encoded diffs and
+// plan files.
+func ReadDiff(r io.Reader) (*tf.Diff, error) {
+	const magic = "tfplan"
+	b := bufio.NewReader(r)
+	if v, err := b.Peek(len(magic)); err == nil && string(v) == magic {
+		p, err := tf.ReadPlan(b)
+		if err != nil {
+			return nil, err
+		}
+		return p.Diff, nil
+	}
+	d := new(tf.Diff)
+	if err := json.NewDecoder(b).Decode(d); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+// WriteDiffFile writes diff d to file in JSON format.
+func WriteDiffFile(file string, d *tf.Diff) error {
+	if isStdio(file) {
+		return WriteDiff(os.Stdout, d)
+	}
+	var b bytes.Buffer
+	if err := WriteDiff(&b, d); err != nil {
+		return err
+	}
+	return ioutil.WriteFile(file, b.Bytes(), 0666)
+}
+
+// WriteDiff writes diff d to w in JSON format.
+func WriteDiff(w io.Writer, d *tf.Diff) error {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(d); err != nil {
+		return err
+	}
+
+	// TODO: Try to avoid this encode/decode/encode logic
+	var v interface{}
+	if err := json.Unmarshal(b.Bytes(), &v); err != nil {
+		return err
+	}
+	var minify func(interface{}) interface{}
+	minify = func(v interface{}) interface{} {
+		switch v := v.(type) {
+		case bool:
+			if !v {
+				return nil
+			}
+		case string:
+			if v == "" {
+				return nil
+			}
+		case []interface{}:
+			keep := v[:0]
+			for _, e := range v {
+				if e = minify(e); e != nil {
+					keep = append(keep, e)
+				}
+			}
+			if v = keep; len(keep) == 0 {
+				return nil
+			}
+		case map[string]interface{}:
+			for k, e := range v {
+				if e = minify(e); e != nil {
+					v[k] = e
+				} else {
+					delete(v, k)
+				}
+			}
+			if len(v) == 0 {
+				return nil
+			}
+		case nil:
+		default:
+			// float64 is omitted since it's not currently used by Diff and may
+			// require special handling.
+			panic(fmt.Sprintf("tfx: unsupported type %T", v))
+		}
+		return v
+	}
+	enc = json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "\t")
+	return enc.Encode(minify(v))
+}
 
 // diffType defines sort order and labels for diff explanation.
 var diffType = map[tf.DiffChangeType]struct {
@@ -150,4 +268,19 @@ func lessModulePath(a, b []string) bool {
 func isRootModule(path []string) bool {
 	// TODO: Can the first element be anything other than "root"?
 	return len(path) == 1 && path[0] == "root"
+}
+
+const stdinLimit = 64 * 1024 * 1024
+
+// open opens the specified file for reading ("" or "-" mean stdin).
+func open(file string) (io.ReadCloser, error) {
+	if isStdio(file) {
+		return ioutil.NopCloser(io.LimitReader(os.Stdin, stdinLimit)), nil
+	}
+	return os.Open(file)
+}
+
+// isStdio returns true if file represents stdin or stdout.
+func isStdio(file string) bool {
+	return file == "" || file == "-"
 }
