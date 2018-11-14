@@ -5,7 +5,6 @@ import (
 	"io"
 	"io/ioutil"
 	"os"
-	"strings"
 
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
@@ -35,13 +34,4 @@ func LoadModule(path string) (*module.Tree, error) {
 		t = nil
 	}
 	return t, err
-}
-
-// TypeProvider returns the provider name prefix for the specified resource or
-// data type.
-func TypeProvider(typ string) string {
-	if i := strings.IndexByte(typ, '_'); i > 0 {
-		return typ[:i]
-	}
-	return ""
 }

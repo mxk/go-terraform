@@ -21,6 +21,8 @@ type Ctx struct {
 	resolver  tf.ResourceProviderResolver
 }
 
+// TODO: Need config maker function to generate minimal configs for aliases
+
 // SetProvider adds a resource provider to the context, replacing any other by
 // the same name. If p is nil, the provider is removed.
 func (c *Ctx) SetProvider(name string, p tf.ResourceProvider) {
@@ -46,6 +48,10 @@ func (c *Ctx) SetProviderFactory(name string, f tf.ResourceProviderFactory) {
 // provider is not registered or not implemented via schema.Provider. The
 // returned value is cached and must only be used for local schema operations.
 func (c *Ctx) Schema(provider string) *schema.Provider {
+	provider = config.ResourceProviderFullName("", provider)
+	if i := strings.IndexByte(provider, '.'); i > 0 {
+		provider = provider[:i] // Strip alias
+	}
 	s, ok := c.schemas[provider]
 	if !ok {
 		if f := c.providers[provider]; f != nil {
@@ -69,7 +75,7 @@ func (c *Ctx) Schema(provider string) *schema.Provider {
 // resource type. It returns nil if the type is unknown or not implemented via
 // schema.Provider.
 func (c *Ctx) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
-	if p := c.Schema(TypeProvider(typ)); p != nil {
+	if p := c.Schema(config.ResourceProviderFullName(typ, "")); p != nil {
 		return p, p.ResourcesMap[typ]
 	}
 	return nil, nil
@@ -83,6 +89,18 @@ func (c *Ctx) Refresh(s *tf.State) (*tf.State, error) {
 		return nil, err
 	}
 	return tc.Refresh()
+}
+
+// SetDefaults sets default values for any missing resource attributes in s.
+// This is only needed after refreshing a scanned state.
+func (c *Ctx) SetDefaults(s *tf.State) {
+	for _, m := range s.Modules {
+		for _, r := range m.Resources {
+			if _, s := c.ResourceSchema(r.Type); s != nil {
+				setDefaults(r.Primary.Attributes, s.Schema)
+			}
+		}
+	}
 }
 
 // Apply does a plan/apply operation to ensure that state s matches config t and
@@ -153,7 +171,6 @@ func (c *Ctx) ResourceForID(typ, id string) (string, *tf.ResourceState, error) {
 			"schema_version": strconv.Itoa(r.SchemaVersion),
 		}
 	}
-	// TODO: Should default values be set here?
 	// TODO: Use importers?
 	return typ + "." + makeName(id), &tf.ResourceState{
 		Type: typ,
@@ -162,7 +179,8 @@ func (c *Ctx) ResourceForID(typ, id string) (string, *tf.ResourceState, error) {
 			Attributes: map[string]string{"id": id},
 			Meta:       meta,
 		},
-		Provider: tf.ResolveProviderName(TypeProvider(typ), nil),
+		Provider: tf.ResolveProviderName(
+			config.ResourceProviderFullName(typ, ""), nil),
 	}, nil
 }
 
@@ -184,13 +202,17 @@ func (c *Ctx) Conform(t *module.Tree, s *tf.State) (StateTransform, error) {
 	// Create a type index for all resources in root
 	types := make(map[string]map[string]*tf.ResourceState)
 	for k, r := range root.Resources {
-		if stateKeyType(k) == "data" {
+		sk, err := tf.ParseResourceStateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		if sk.Mode != config.ManagedResourceMode {
 			continue // TODO: Figure out how data resources should be handled
 		}
-		states := types[r.Type]
+		states := types[sk.Type]
 		if states == nil {
 			states = make(map[string]*tf.ResourceState)
-			types[r.Type] = states
+			types[sk.Type] = states
 		}
 		states[k] = r
 	}
@@ -199,8 +221,11 @@ func (c *Ctx) Conform(t *module.Tree, s *tf.State) (StateTransform, error) {
 	st := make(StateTransform)
 	for _, m := range nilDiff.Modules {
 		for k, d := range m.Resources {
-			typ := stateKeyType(k)
-			states := types[typ]
+			sk, _ := tf.ParseResourceStateKey(k)
+			if sk.Mode != config.ManagedResourceMode {
+				continue
+			}
+			states := types[sk.Type]
 			bestScore := -1
 			var bestKey string
 			for sk, s := range states {
@@ -257,11 +282,33 @@ func (c *Ctx) provider(name string) (tf.ResourceProvider, error) {
 	return p, p.Configure(tf.NewResourceConfig(cfg))
 }
 
-// stateKeyType returns the first component of a resource state key. This will
-// be "data" for data resources.
-func stateKeyType(k string) string {
-	if i := strings.IndexByte(k, '.'); i > 0 {
-		return k[:i]
+// setDefaults sets missing attributes in attrs to their default values.
+func setDefaults(attrs map[string]string, s map[string]*schema.Schema) {
+	w := schema.MapFieldWriter{Schema: s}
+	for k, s := range s {
+		// Only set primitive types
+		switch s.Type {
+		case schema.TypeBool,
+			schema.TypeInt,
+			schema.TypeFloat,
+			schema.TypeString:
+		default:
+			continue
+		}
+
+		// The attribute must be simple, non-computed, and optional
+		if _, ok := attrs[k]; ok || s.Default == nil ||
+			!s.Optional || s.Computed || s.ForceNew ||
+			len(s.ComputedWhen) > 0 || len(s.ConflictsWith) > 0 ||
+			s.Deprecated != "" || s.Removed != "" {
+			continue
+		}
+
+		// Intentionally not using DefaultValue() to avoid any non-deterministic
+		// behavior from DefaultFunc.
+		w.WriteField([]string{k}, s.Default)
 	}
-	return ""
+	for k, v := range w.Map() {
+		attrs[k] = v
+	}
 }
