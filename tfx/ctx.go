@@ -185,8 +185,9 @@ func (c *Ctx) ResourceForID(typ, id string) (string, *tf.ResourceState, error) {
 }
 
 // Conform returns a transformation that associates root module resource states
-// in s with their configurations in t.
-func (c *Ctx) Conform(t *module.Tree, s *tf.State) (StateTransform, error) {
+// in s with their configurations in t. If strict is true, the transform will
+// remove any non-conforming resources.
+func (c *Ctx) Conform(t *module.Tree, s *tf.State, strict bool) (StateTransform, error) {
 	root := s.RootModule()
 	if len(root.Resources) == 0 {
 		return nil, nil
@@ -246,6 +247,19 @@ func (c *Ctx) Conform(t *module.Tree, s *tf.State) (StateTransform, error) {
 			}
 			st[src] = dst
 			delete(states, bestKey)
+		}
+	}
+
+	// Remove non-conforming resources
+	if strict {
+		for _, states := range types {
+			for k := range states {
+				addr, err := stateKeyToAddress(nil, k)
+				if err != nil {
+					return nil, err
+				}
+				st[addr] = ""
+			}
 		}
 	}
 	return st, nil
