@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TODO: Clean this up
+
 func TestCtx(t *testing.T) {
 	renameTypes := func(name string, src map[string]*schema.Resource) {
 		tmp := make(map[string]*schema.Resource, len(src))
@@ -39,10 +41,9 @@ func TestCtx(t *testing.T) {
 	}
 
 	var cfgCount [2]int32
-	ctx := Ctx{Providers: new(ProviderReg).
-		Register("test1", "", newFactory("test1", &cfgCount[0])).
-		Register("test2", "", newFactory("test2", &cfgCount[1])),
-	}
+	var ctx Ctx
+	ctx.Providers.Add("test1", "", newFactory("test1", &cfgCount[0]))
+	ctx.Providers.Add("test2", "", newFactory("test2", &cfgCount[1]))
 
 	s, err := ctx.Apply(loadCfg(t, applyCfg1), nil)
 	require.NoError(t, err)

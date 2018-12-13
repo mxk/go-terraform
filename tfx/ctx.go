@@ -15,17 +15,15 @@ import (
 type Ctx struct {
 	Meta        tf.ContextMeta
 	Parallelism int
-	Providers   *ProviderReg
+	Providers   ProviderMap
 }
 
-// DefaultContext returns a context configured to use default providers.
-func DefaultContext() Ctx {
-	return Ctx{Providers: &Providers}
-}
+// Context returns a new context configured to use default providers.
+func Context() *Ctx { return &Ctx{Providers: Providers} }
 
 // Refresh updates the state of all resources in s and returns the new state.
 func (c *Ctx) Refresh(s *tf.State) (*tf.State, error) {
-	opts := c.opts(module.NewEmptyTree(), s, c.Providers)
+	opts := c.opts(module.NewEmptyTree(), s, c.Providers.DefaultResolver())
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
@@ -60,7 +58,7 @@ func (c *Ctx) Apply(t *module.Tree, s *tf.State) (*tf.State, error) {
 		return tc.State(), err
 	}
 	opts.Diff = p.Diff
-	opts.ProviderResolver = c.Providers
+	opts.ProviderResolver = c.Providers.DefaultResolver()
 	tc, err = tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
@@ -70,9 +68,9 @@ func (c *Ctx) Apply(t *module.Tree, s *tf.State) (*tf.State, error) {
 
 // Passthrough does a plan/apply operation with no-op provider CRUD methods and
 // returns the new state. The providers are prevented from making any API calls,
-// and the resulting state becomes a copy of the input config.
+// and the resulting (invalid) state becomes a copy of the input config.
 func (c *Ctx) Passthrough(t *module.Tree, s *tf.State) (*tf.State, error) {
-	opts := c.opts(t, s, c.Providers.SchemaResolver())
+	opts := c.opts(t, s, c.Providers.PassthroughResolver())
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
@@ -90,7 +88,7 @@ func (c *Ctx) Passthrough(t *module.Tree, s *tf.State) (*tf.State, error) {
 // behavior. For example, resource lifecycle information is only available in
 // the config, so create-before-destroy behavior cannot be implemented.
 func (c *Ctx) Patch(s *tf.State, d *tf.Diff) (*tf.State, error) {
-	opts := c.opts(nil, s, c.Providers)
+	opts := c.opts(nil, s, c.Providers.DefaultResolver())
 	opts.Diff = d
 	return patch(&opts)
 }

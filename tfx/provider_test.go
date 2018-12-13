@@ -29,7 +29,7 @@ func TestConfig(t *testing.T) {
 }
 
 func TestProviderFields(t *testing.T) {
-	// Changes to schema.Provider fields may require updates to disableProvider
+	// Changes to schema.Provider fields may require updates to providerMode
 	fields := []string{
 		"Schema",
 		"ResourcesMap",
@@ -50,7 +50,6 @@ func TestProviderFields(t *testing.T) {
 }
 
 func TestResourceFields(t *testing.T) {
-	// Changes to schema.Resource fields may require updates to disableResource
 	fields := []string{
 		"Schema",
 		"SchemaVersion",

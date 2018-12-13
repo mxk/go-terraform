@@ -14,11 +14,12 @@ import (
 	tf "github.com/hashicorp/terraform/terraform"
 )
 
-// Providers is the default provider registry.
-var Providers ProviderReg
+// Providers is the default in-memory provider registry.
+var Providers ProviderMap
 
 // MakeFactory adds a nil error return to a standard provider constructor to
-// match factory function signature.
+// match factory function signature. This should be used instead of
+// terraform.ResourceProviderFactoryFixed.
 func MakeFactory(f func() tf.ResourceProvider) tf.ResourceProviderFactory {
 	return func() (tf.ResourceProvider, error) { return f(), nil }
 }
@@ -53,30 +54,28 @@ func Config(s map[string]*schema.Schema, raw map[string]interface{}) (*schema.Re
 	return b.Config(), nil
 }
 
-// ProviderReg is an in-memory provider registry. It returns provider resolvers
-// for Terraform context operations.
-type ProviderReg struct {
-	reg            map[string]*provider
-	schemaResolver tf.ResourceProviderResolverFunc
-}
+// ProviderMap is an in-memory provider registry. It returns provider resolvers
+// for Terraform context operations and provides access to provider schemas.
+type ProviderMap map[string]*provider
 
-// Register adds a new provider factory to the registry. If the provider is
-// implemented via schema.Provider, then f must return a new instance for each
-// call (i.e. do not use terraform.ResourceProviderFactoryFixed wrapper).
-func (r *ProviderReg) Register(name, version string, f tf.ResourceProviderFactory) *ProviderReg {
-	if r.reg == nil {
-		r.reg = make(map[string]*provider)
-	} else if _, dup := r.reg[name]; dup {
+// Add adds a new provider to the registry. Version is optional. The factory
+// function must return a new provider instance for each call (i.e. do not use
+// terraform.ResourceProviderFactoryFixed wrapper).
+func (r *ProviderMap) Add(name, version string, f tf.ResourceProviderFactory) {
+	if *r == nil {
+		*r = make(map[string]*provider)
+	} else if _, dup := (*r)[name]; dup {
 		panic("tfx: provider already registered: " + name)
 	}
-	r.reg[name] = &provider{factory: f, version: version}
-	return r
+	p := &provider{version: version}
+	p.factory[defaultMode] = f
+	(*r)[name] = p
 }
 
 // Schema returns the schema for the specified provider. It returns nil if the
 // provider is not registered or not implemented via schema.Provider. The
 // returned value is cached and must only be used for local schema operations.
-func (r *ProviderReg) Schema(provider string) *schema.Provider {
+func (r ProviderMap) Schema(provider string) *schema.Provider {
 	provider = config.ResourceProviderFullName("", provider)
 	if i := strings.IndexByte(provider, '.'); i > 0 {
 		provider = provider[:i] // Strip alias
@@ -90,7 +89,7 @@ func (r *ProviderReg) Schema(provider string) *schema.Provider {
 // ResourceSchema returns the provider and resource schema for the specified
 // resource type. It returns (nil, nil) if the type is unknown or not
 // implemented via schema.Provider.
-func (r *ProviderReg) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
+func (r ProviderMap) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
 	if p := r.Schema(config.ResourceProviderFullName(typ, "")); p != nil {
 		return p, p.ResourcesMap[typ]
 	}
@@ -99,7 +98,7 @@ func (r *ProviderReg) ResourceSchema(typ string) (*schema.Provider, *schema.Reso
 
 // NewResource returns a skeleton resource state for the specified resource type
 // and ID. The returned string is a normalized resource state key.
-func (r *ProviderReg) NewResource(typ, id string) (string, *tf.ResourceState, error) {
+func (r ProviderMap) NewResource(typ, id string) (string, *tf.ResourceState, error) {
 	_, s := r.ResourceSchema(typ)
 	if s == nil {
 		return "", nil, fmt.Errorf("tfx: unknown resource type %q", typ)
@@ -123,70 +122,70 @@ func (r *ProviderReg) NewResource(typ, id string) (string, *tf.ResourceState, er
 	}, nil
 }
 
-// ResolveProviders implements terraform.ResourceProviderResolver.
-func (r *ProviderReg) ResolveProviders(reqd discovery.PluginRequirements) (
-	map[string]tf.ResourceProviderFactory, []error,
-) {
-	return r.resolve(reqd, false)
+// DefaultResolver returns a resolver for unmodified providers.
+func (r ProviderMap) DefaultResolver() tf.ResourceProviderResolver {
+	return r.resolver(defaultMode)
 }
 
-// SchemaResolver returns a provider resolver containing schema-only providers.
-// Configuration and CRUD functions are replaced by no-ops, preventing the
-// provider from making any API calls.
-func (r *ProviderReg) SchemaResolver() tf.ResourceProviderResolver {
-	if r.schemaResolver == nil {
-		r.schemaResolver = func(reqd discovery.PluginRequirements) (
-			map[string]tf.ResourceProviderFactory, []error,
-		) {
-			return r.resolve(reqd, true)
-		}
-	}
-	return r.schemaResolver
+// SchemaResolver returns a resolver for schema-only providers. Provider
+// configuration and CRUD operations are disabled, preventing the provider from
+// requiring a valid config or making any API calls.
+func (r ProviderMap) SchemaResolver() tf.ResourceProviderResolver {
+	return r.resolver(schemaMode)
+}
+
+// PassthroughResolver returns a SchemaResolver with all schema validations
+// disabled.
+func (r ProviderMap) PassthroughResolver() tf.ResourceProviderResolver {
+	return r.resolver(passthroughMode)
 }
 
 // get returns the provider with the specified name.
-func (r *ProviderReg) get(name string) *provider {
-	p := r.reg[name]
+func (r ProviderMap) get(name string) *provider {
+	p := r[name]
 	if p != nil {
 		p.init()
 	}
 	return p
 }
 
-// resolve returns providers that match the specified requirements.
-func (r *ProviderReg) resolve(reqd discovery.PluginRequirements, schemaOnly bool) (
-	m map[string]tf.ResourceProviderFactory, errs []error,
-) {
-	m = make(map[string]tf.ResourceProviderFactory, len(reqd))
-	for name, req := range reqd {
-		if p := r.get(name); p == nil {
-			err := fmt.Errorf("provider %q is not available", name)
+// resolver returns a provider resolver with the specified mode of operation.
+func (r ProviderMap) resolver(mode providerMode) tf.ResourceProviderResolver {
+	return tf.ResourceProviderResolverFunc(func(reqd discovery.PluginRequirements) (
+		m map[string]tf.ResourceProviderFactory, errs []error,
+	) {
+		m = make(map[string]tf.ResourceProviderFactory, len(reqd))
+		for name, req := range reqd {
+			var err error
+			if p := r.get(name); p == nil {
+				err = fmt.Errorf("provider %q is not available", name)
+			} else if !req.Versions.Unconstrained() && p.version != "" &&
+				!req.Versions.Allows(p.discVer) {
+				err = fmt.Errorf("provider %q v%s does not satisfy %q",
+					name, strings.TrimPrefix(p.version, "v"), req.Versions)
+			} else if f := p.factory[mode]; f == nil {
+				err = fmt.Errorf("provider %q does not support mode %v",
+					name, mode)
+			} else {
+				m[name] = f
+				continue
+			}
 			errs = append(errs, err)
-		} else if !req.Versions.Unconstrained() && p.version != "" &&
-			!req.Versions.Allows(p.discVer) {
-			err := fmt.Errorf("provider %q v%s does not satisfy %q",
-				name, p.version, req.Versions)
-			errs = append(errs, err)
-		} else if schemaOnly {
-			m[name] = p.schemaFactory
-		} else {
-			m[name] = p.factory
 		}
-	}
-	return
+		return
+	})
 }
 
 // provider contains information for a single provider.
 type provider struct {
-	factory       tf.ResourceProviderFactory
-	schemaFactory tf.ResourceProviderFactory
-	version       string
-	discVer       discovery.Version
-	schema        *schema.Provider
-	initDone      bool
+	factory  [modeCount]tf.ResourceProviderFactory
+	schema   *schema.Provider
+	version  string
+	discVer  discovery.Version
+	initDone bool
 }
 
-// init performs a one-time provider initialization.
+// init parses provider version and creates additional factory functions.
 func (p *provider) init() {
 	if p.initDone {
 		return
@@ -195,37 +194,60 @@ func (p *provider) init() {
 	if p.version != "" {
 		p.discVer = discovery.VersionStr(p.version).MustParse()
 	}
-	if s, err := p.factory(); err == nil {
-		if s, ok := s.(*schema.Provider); ok {
-			disableProvider(s)
-			p.schema = s
-			p.schemaFactory = func() (tf.ResourceProvider, error) {
-				// Deep copy seems to be slower than getting a new instance
-				s, err := p.factory()
-				if s != nil {
-					disableProvider(s.(*schema.Provider))
-				}
-				return s, err
-			}
+	if p.schema, _ = p.schemaProvider(schemaMode); p.schema != nil {
+		p.factory[schemaMode] = func() (tf.ResourceProvider, error) {
+			return p.schemaProvider(schemaMode)
+		}
+		p.factory[passthroughMode] = func() (tf.ResourceProvider, error) {
+			return p.schemaProvider(passthroughMode)
 		}
 	}
 }
 
-// disableProvider modifies provider p to prevent it from making any API calls.
-func disableProvider(p *schema.Provider) {
-	for _, r := range p.ResourcesMap {
-		disableResource(r)
+// schemaProvider returns a new schema.Provider instance configured for the
+// specified mode of operation. It returns (nil, nil) if the provider was not
+// implemented via schema.Provider.
+func (p *provider) schemaProvider(mode providerMode) (*schema.Provider, error) {
+	s, err := p.factory[defaultMode]()
+	if err == nil {
+		if s, ok := s.(*schema.Provider); ok {
+			if s == p.schema {
+				// Protection against terraform.ResourceProviderFactoryFixed
+				panic("tfx: factory returned same provider instance")
+			}
+			return mode.apply(s), nil
+		}
 	}
-	for _, r := range p.DataSourcesMap {
-		disableResource(r)
-	}
-	p.ConfigureFunc = nil
+	return nil, err
 }
 
-// disableResource disables CRUD operations for resource r.
-func disableResource(r *schema.Resource) {
+// providerMode alters provider behavior to support non-standard operations.
+type providerMode int
+
+const (
+	defaultMode     providerMode = iota // Standard operation
+	schemaMode                          // Schema-only (no config or API calls)
+	passthroughMode                     // Schema-only and no validation
+	modeCount
+)
+
+func (m providerMode) apply(p *schema.Provider) *schema.Provider {
+	if p == nil || m == defaultMode {
+		return p
+	}
+	for _, r := range p.ResourcesMap {
+		m.updateResource(r)
+	}
+	for _, r := range p.DataSourcesMap {
+		m.updateResource(r)
+	}
+	p.ConfigureFunc = nil
+	return p
+}
+
+func (m providerMode) updateResource(r *schema.Resource) {
 	for _, s := range r.Schema {
-		disableSchema(s)
+		m.updateSchema(s)
 	}
 	r.MigrateState = nil
 	r.Create = noopCreate
@@ -233,26 +255,29 @@ func disableResource(r *schema.Resource) {
 	r.Update = noop
 	r.Delete = noop
 	r.Exists = nil
+	if m == passthroughMode {
+		r.CustomizeDiff = nil
+	}
 }
 
-// disableSchema disables CRUD operations for element type of s.
-func disableSchema(s *schema.Schema) {
+func (m providerMode) updateSchema(s *schema.Schema) {
 	switch e := s.Elem.(type) {
 	case *schema.Schema:
-		disableSchema(e)
+		m.updateSchema(e)
 	case *schema.Resource:
-		disableResource(e)
+		m.updateResource(e)
 	case nil:
 	default:
 		panic("tfx: unsupported schema elem type")
 	}
+	if m == passthroughMode {
+		s.ValidateFunc = nil
+	}
 }
 
-// noopCreate is a passthrough resource Create function.
 func noopCreate(r *schema.ResourceData, _ interface{}) error {
-	r.SetId("<computed>")
+	r.SetId("?")
 	return nil
 }
 
-// noop is a passthrough Read/Update/Delete function.
 func noop(_ *schema.ResourceData, _ interface{}) error { return nil }

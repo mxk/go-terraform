@@ -34,9 +34,8 @@ func TestDiff(t *testing.T) {
 			  resource_group_name = "rg3" (expected: "rg1")
 		`},
 	}
-	ctx := Ctx{Providers: new(ProviderReg).
-		Register("azurerm", "", MakeFactory(azurerm.Provider)),
-	}
+	var ctx Ctx
+	ctx.Providers.Add("azurerm", "", MakeFactory(azurerm.Provider))
 	dir := testDataDir("diff")
 	m, err := LoadModule(filepath.Join(dir, "cfg.tf"))
 	require.NoError(t, err)
