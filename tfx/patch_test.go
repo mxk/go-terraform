@@ -19,8 +19,9 @@ func TestPatch(t *testing.T) {
 	files, err := ioutil.ReadDir(root)
 	require.NoError(t, err)
 
-	var ctx Ctx
-	ctx.SetProvider("test", test.Provider())
+	ctx := Ctx{Providers: new(ProviderReg).
+		Register("test", "", MakeFactory(test.Provider)),
+	}
 	for _, fi := range files {
 		config := fi.Name()
 		if !strings.HasSuffix(config, ".tf") {

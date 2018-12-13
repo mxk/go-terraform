@@ -2,88 +2,30 @@
 package tfx
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
-
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
 )
 
-// Ctx maintains a resource provider registry and implements non-standard
-// Terraform operations on state and config files. The zero value is a valid
-// context with no registered providers.
+// TODO: Pass provider alias configs via Ctx?
+
+// Ctx implements standard and non-standard Terraform operations using a
+// provider registry.
 type Ctx struct {
-	providers map[string]tf.ResourceProviderFactory
-	schemas   map[string]*schema.Provider
-	resolver  tf.ResourceProviderResolver
+	Meta        tf.ContextMeta
+	Parallelism int
+	Providers   *ProviderReg
 }
 
-// TODO: Need config maker function to generate minimal configs for aliases
-
-// SetProvider adds a resource provider to the context, replacing any other by
-// the same name. If p is nil, the provider is removed.
-func (c *Ctx) SetProvider(name string, p tf.ResourceProvider) {
-	c.SetProviderFactory(name, tf.ResourceProviderFactoryFixed(p))
-}
-
-// SetProviderFactory adds a resource provider factory to the context, replacing
-// any other by the same name. If f is nil, the provider is removed.
-func (c *Ctx) SetProviderFactory(name string, f tf.ResourceProviderFactory) {
-	delete(c.schemas, name)
-	c.resolver = nil
-	if f == nil {
-		delete(c.providers, name)
-		return
-	}
-	if c.providers == nil {
-		c.providers = make(map[string]tf.ResourceProviderFactory)
-	}
-	c.providers[name] = f
-}
-
-// Schema returns the schema for the specified provider. It returns nil if the
-// provider is not registered or not implemented via schema.Provider. The
-// returned value is cached and must only be used for local schema operations.
-func (c *Ctx) Schema(provider string) *schema.Provider {
-	provider = config.ResourceProviderFullName("", provider)
-	if i := strings.IndexByte(provider, '.'); i > 0 {
-		provider = provider[:i] // Strip alias
-	}
-	s, ok := c.schemas[provider]
-	if !ok {
-		if f := c.providers[provider]; f != nil {
-			p, err := f()
-			if s, ok = p.(*schema.Provider); ok && err == nil {
-				s = DeepCopy(s).(*schema.Provider)
-				s.ConfigureFunc = nil
-			} else {
-				s = nil
-			}
-		}
-		if c.schemas == nil {
-			c.schemas = make(map[string]*schema.Provider)
-		}
-		c.schemas[provider] = s
-	}
-	return s
-}
-
-// ResourceSchema returns the provider and resource schema for the specified
-// resource type. It returns nil if the type is unknown or not implemented via
-// schema.Provider.
-func (c *Ctx) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
-	if p := c.Schema(config.ResourceProviderFullName(typ, "")); p != nil {
-		return p, p.ResourcesMap[typ]
-	}
-	return nil, nil
+// DefaultContext returns a context configured to use default providers.
+func DefaultContext() Ctx {
+	return Ctx{Providers: &Providers}
 }
 
 // Refresh updates the state of all resources in s and returns the new state.
 func (c *Ctx) Refresh(s *tf.State) (*tf.State, error) {
-	opts := c.opts(module.NewEmptyTree(), s)
+	opts := c.opts(module.NewEmptyTree(), s, c.Providers)
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
@@ -96,7 +38,7 @@ func (c *Ctx) Refresh(s *tf.State) (*tf.State, error) {
 func (c *Ctx) SetDefaults(s *tf.State) {
 	for _, m := range s.Modules {
 		for _, r := range m.Resources {
-			if _, s := c.ResourceSchema(r.Type); s != nil {
+			if _, s := c.Providers.ResourceSchema(r.Type); s != nil {
 				setDefaults(r.Primary.Attributes, s.Schema)
 			}
 		}
@@ -106,13 +48,37 @@ func (c *Ctx) SetDefaults(s *tf.State) {
 // Apply does a plan/apply operation to ensure that state s matches config t and
 // returns the new state.
 func (c *Ctx) Apply(t *module.Tree, s *tf.State) (*tf.State, error) {
-	opts := c.opts(t, s)
+	// TODO: Test whether using schema-only resolver for Plan is really faster
+	// for complex providers.
+	opts := c.opts(t, s, c.Providers.SchemaResolver())
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tc.Plan(); err != nil {
+	p, err := tc.Plan()
+	if err != nil || p.Diff.Empty() {
+		return tc.State(), err
+	}
+	opts.Diff = p.Diff
+	opts.ProviderResolver = c.Providers
+	tc, err = tf.NewContext(&opts)
+	if err != nil {
 		return nil, err
+	}
+	return tc.Apply()
+}
+
+// Passthrough does a plan/apply operation with no-op provider CRUD methods and
+// returns the new state. The providers are prevented from making any API calls,
+// and the resulting state becomes a copy of the input config.
+func (c *Ctx) Passthrough(t *module.Tree, s *tf.State) (*tf.State, error) {
+	opts := c.opts(t, s, c.Providers.SchemaResolver())
+	tc, err := tf.NewContext(&opts)
+	if err != nil {
+		return nil, err
+	}
+	if p, err := tc.Plan(); err != nil || p.Diff.Empty() {
+		return tc.State(), err
 	}
 	return tc.Apply()
 }
@@ -124,7 +90,7 @@ func (c *Ctx) Apply(t *module.Tree, s *tf.State) (*tf.State, error) {
 // behavior. For example, resource lifecycle information is only available in
 // the config, so create-before-destroy behavior cannot be implemented.
 func (c *Ctx) Patch(s *tf.State, d *tf.Diff) (*tf.State, error) {
-	opts := c.opts(nil, s)
+	opts := c.opts(nil, s, c.Providers)
 	opts.Diff = d
 	return patch(&opts)
 }
@@ -142,7 +108,7 @@ func (c *Ctx) Diff(t *module.Tree, s *tf.State) (*tf.Diff, error) {
 // Plan returns a plan to apply configuration t to state s. If s is nil, an
 // empty state is assumed.
 func (c *Ctx) Plan(t *module.Tree, s *tf.State) (*tf.Plan, error) {
-	opts := c.opts(t, s)
+	opts := c.opts(t, s, c.Providers.SchemaResolver())
 	tc, err := tf.NewContext(&opts)
 	if err != nil {
 		return nil, err
@@ -152,36 +118,6 @@ func (c *Ctx) Plan(t *module.Tree, s *tf.State) (*tf.Plan, error) {
 		normDiff(p.Diff)
 	}
 	return p, err
-}
-
-// ResourceForID returns a skeleton resource state for the specified provider
-// name, resource type, and resource ID. The returned string is a normalized
-// resource state key.
-func (c *Ctx) ResourceForID(typ, id string) (string, *tf.ResourceState, error) {
-	p, r := c.ResourceSchema(typ)
-	if p == nil {
-		return "", nil, fmt.Errorf("tfx: unknown provider for type %q", typ)
-	}
-	if r == nil {
-		return "", nil, fmt.Errorf("tfx: unknown resource type %q", typ)
-	}
-	var meta map[string]interface{}
-	if r.SchemaVersion > 0 {
-		meta = map[string]interface{}{
-			"schema_version": strconv.Itoa(r.SchemaVersion),
-		}
-	}
-	// TODO: Use importers?
-	return typ + "." + makeName(id), &tf.ResourceState{
-		Type: typ,
-		Primary: &tf.InstanceState{
-			ID:         id,
-			Attributes: map[string]string{"id": id},
-			Meta:       meta,
-		},
-		Provider: tf.ResolveProviderName(
-			config.ResourceProviderFullName(typ, ""), nil),
-	}, nil
 }
 
 // Conform returns a transformation that associates root module resource states
@@ -266,34 +202,17 @@ func (c *Ctx) Conform(t *module.Tree, s *tf.State, strict bool) (StateTransform,
 }
 
 // opts returns the options for creating a new Terraform context.
-func (c *Ctx) opts(t *module.Tree, s *tf.State) tf.ContextOpts {
-	if c.resolver == nil {
-		cpy := make(map[string]tf.ResourceProviderFactory, len(c.providers))
-		for k, v := range c.providers {
-			cpy[k] = v
-		}
-		c.resolver = tf.ResourceProviderResolverFixed(cpy)
+func (c *Ctx) opts(t *module.Tree, s *tf.State, r tf.ResourceProviderResolver) tf.ContextOpts {
+	if c.Meta.Env == "" {
+		c.Meta.Env = "default"
 	}
 	return tf.ContextOpts{
-		Meta:             &tf.ContextMeta{Env: "default"},
+		Meta:             &c.Meta,
 		Module:           t,
+		Parallelism:      c.Parallelism,
 		State:            s,
-		ProviderResolver: c.resolver,
+		ProviderResolver: r,
 	}
-}
-
-// provider returns a configured resource provider.
-func (c *Ctx) provider(name string) (tf.ResourceProvider, error) {
-	f := c.providers[name]
-	if f == nil {
-		return nil, fmt.Errorf("tfx: unknown provider %q", name)
-	}
-	p, err := f()
-	if err != nil {
-		return nil, err
-	}
-	cfg, _ := config.NewRawConfig(make(map[string]interface{}))
-	return p, p.Configure(tf.NewResourceConfig(cfg))
 }
 
 // setDefaults sets missing attributes in attrs to their default values.

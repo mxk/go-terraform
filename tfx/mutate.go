@@ -57,7 +57,7 @@ func (c *Ctx) Mutate(s *tf.State, cfg *MutateCfg) (*tf.Diff, error) {
 			break
 		}
 		curState := root.Resources[k]
-		p, r := c.ResourceSchema(curState.Type)
+		p, r := c.Providers.ResourceSchema(curState.Type)
 		if r == nil {
 			continue
 		}

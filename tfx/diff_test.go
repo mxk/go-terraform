@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"github.com/LuminalHQ/cloudcover/x/cli"
-	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm"
 )
+
+// TODO: Switch to test provider
 
 func TestDiff(t *testing.T) {
 	tests := []*struct{ state, diff string }{
@@ -33,20 +34,16 @@ func TestDiff(t *testing.T) {
 			  resource_group_name = "rg3" (expected: "rg1")
 		`},
 	}
-	// Calling azurerm.Provider() directly to avoid import cycle with tfazure
-	p := azurerm.Provider().(*schema.Provider)
-	p.ConfigureFunc = func(*schema.ResourceData) (interface{}, error) {
-		return nil, nil
+	ctx := Ctx{Providers: new(ProviderReg).
+		Register("azurerm", "", MakeFactory(azurerm.Provider)),
 	}
-	var c Ctx
-	c.SetProvider("azurerm", p)
 	dir := testDataDir("diff")
 	m, err := LoadModule(filepath.Join(dir, "cfg.tf"))
 	require.NoError(t, err)
 	for _, tc := range tests {
 		s, err := ReadStateFile(filepath.Join(dir, tc.state))
 		require.NoError(t, err)
-		d, err := c.Diff(m, s)
+		d, err := ctx.Diff(m, s)
 		require.NoError(t, err)
 		assert.Equal(t, strings.TrimSpace(cli.Dedent(tc.diff)), ExplainDiff(d))
 	}
