@@ -25,23 +25,35 @@ func TestLog(t *testing.T) {
 	var b strings.Builder
 	log.SetFlags(0)
 
-	assert.Error(t, SetLogFilter(&b, "INVALID"))
+	assert.Error(t, SetLogFilter(&b, "INVALID", false))
 
-	require.NoError(t, SetLogFilter(&b, ""))
+	require.NoError(t, SetLogFilter(&b, "", false))
 	tf.NewState()
 	log.Print("passthrough")
 	require.Equal(t, "passthrough\n", b.String())
 	b.Reset()
 
-	require.NoError(t, SetLogFilter(&b, "DEBUG"))
+	require.NoError(t, SetLogFilter(&b, "", true))
+	tf.NewState()
+	log.Print("passthrough")
+	require.Empty(t, b.String())
+	b.Reset()
+
+	require.NoError(t, SetLogFilter(&b, "DEBUG", false))
 	s := tf.NewState()
 	want := fmt.Sprintf("[DEBUG] New state was assigned lineage %q\n", s.Lineage)
 	require.Equal(t, want, b.String())
 	b.Reset()
 
-	require.NoError(t, SetLogFilter(&b, "info"))
+	require.NoError(t, SetLogFilter(&b, "info", false))
 	tf.NewState()
 	log.Print("passthrough")
 	require.Equal(t, "passthrough\n", b.String())
+	b.Reset()
+
+	require.NoError(t, SetLogFilter(&b, "INFO", true))
+	tf.NewState()
+	log.Print("passthrough")
+	require.Empty(t, b.String())
 	b.Reset()
 }
