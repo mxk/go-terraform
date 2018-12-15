@@ -56,5 +56,6 @@ func SetLogFilter(w io.Writer, level string, requireLevel bool) error {
 		}
 	}
 	log.SetOutput(filter)
+	os.Setenv(logging.EnvLog, level) // For logging.LogLevel()
 	return nil
 }

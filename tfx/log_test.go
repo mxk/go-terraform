@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/logging"
 	tf "github.com/hashicorp/terraform/terraform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,6 +29,7 @@ func TestLog(t *testing.T) {
 	assert.Error(t, SetLogFilter(&b, "INVALID", false))
 
 	require.NoError(t, SetLogFilter(&b, "", false))
+	assert.False(t, logging.IsDebugOrHigher())
 	tf.NewState()
 	log.Print("passthrough")
 	require.Equal(t, "passthrough\n", b.String())
@@ -40,12 +42,14 @@ func TestLog(t *testing.T) {
 	b.Reset()
 
 	require.NoError(t, SetLogFilter(&b, "DEBUG", false))
+	assert.True(t, logging.IsDebugOrHigher())
 	s := tf.NewState()
 	want := fmt.Sprintf("[DEBUG] New state was assigned lineage %q\n", s.Lineage)
 	require.Equal(t, want, b.String())
 	b.Reset()
 
 	require.NoError(t, SetLogFilter(&b, "info", false))
+	assert.False(t, logging.IsDebugOrHigher())
 	tf.NewState()
 	log.Print("passthrough")
 	require.Equal(t, "passthrough\n", b.String())
