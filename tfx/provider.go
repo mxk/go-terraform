@@ -54,6 +54,28 @@ func Config(s map[string]*schema.Schema, raw map[string]interface{}) (*schema.Re
 	return b.Config(), nil
 }
 
+// InitSchemaProvider should be called from factory functions to initialize new
+// schema.Provider instances. It disables DefaultFuncs to ensure deterministic
+// behavior (these are normally used to get environment variables), and sets
+// zero-value defaults to prevent any user prompts.
+func InitSchemaProvider(rp tf.ResourceProvider) *schema.Provider {
+	p, ok := rp.(*schema.Provider)
+	if !ok {
+		panic("tfx: provider not implemented via schema.Provider")
+	}
+	for _, s := range p.Schema {
+		if s.DefaultFunc = nil; s.Default != nil {
+			continue
+		}
+		if v := s.ZeroValue(); !s.Required {
+			s.Default = v
+		} else {
+			s.DefaultFunc = func() (interface{}, error) { return v, nil }
+		}
+	}
+	return p
+}
+
 // ProviderMap is an in-memory provider registry. It returns provider resolvers
 // for Terraform context operations and provides access to provider schemas.
 type ProviderMap map[string]*provider
