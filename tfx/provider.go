@@ -207,6 +207,9 @@ type provider struct {
 	initDone bool
 }
 
+// Version returns provider version.
+func (p *provider) Version() string { return p.version }
+
 // init parses provider version and creates additional factory functions.
 func (p *provider) init() {
 	if p.initDone {
