@@ -15,7 +15,7 @@ import (
 func LoadModule(path string) (*module.Tree, error) {
 	var c *config.Config
 	var err error
-	if path == "" || path == "-" {
+	if isStdio(path) {
 		var b []byte
 		b, err = ioutil.ReadAll(io.LimitReader(os.Stdin, stdinLimit))
 		if err == nil {
