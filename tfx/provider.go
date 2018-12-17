@@ -83,26 +83,26 @@ type ProviderMap map[string]*provider
 // Add adds a new provider to the registry. Version is optional. The factory
 // function must return a new provider instance for each call (i.e. do not use
 // terraform.ResourceProviderFactoryFixed wrapper).
-func (r *ProviderMap) Add(name, version string, f tf.ResourceProviderFactory) {
-	if *r == nil {
-		*r = make(map[string]*provider)
-	} else if _, dup := (*r)[name]; dup {
+func (pm *ProviderMap) Add(name, version string, f tf.ResourceProviderFactory) {
+	if *pm == nil {
+		*pm = make(map[string]*provider)
+	} else if _, dup := (*pm)[name]; dup {
 		panic("tfx: provider already registered: " + name)
 	}
 	p := &provider{version: version}
 	p.factory[defaultMode] = f
-	(*r)[name] = p
+	(*pm)[name] = p
 }
 
 // Schema returns the schema for the specified provider. It returns nil if the
 // provider is not registered or not implemented via schema.Provider. The
 // returned value is cached and must only be used for local schema operations.
-func (r ProviderMap) Schema(provider string) *schema.Provider {
+func (pm ProviderMap) Schema(provider string) *schema.Provider {
 	provider = config.ResourceProviderFullName("", provider)
 	if i := strings.IndexByte(provider, '.'); i > 0 {
 		provider = provider[:i] // Strip alias
 	}
-	if p := r.get(provider); p != nil {
+	if p := pm.get(provider); p != nil {
 		return p.schema
 	}
 	return nil
@@ -111,19 +111,30 @@ func (r ProviderMap) Schema(provider string) *schema.Provider {
 // ResourceSchema returns the provider and resource schema for the specified
 // resource type. It returns (nil, nil) if the type is unknown or not
 // implemented via schema.Provider.
-func (r ProviderMap) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
-	if p := r.Schema(config.ResourceProviderFullName(typ, "")); p != nil {
+func (pm ProviderMap) ResourceSchema(typ string) (*schema.Provider, *schema.Resource) {
+	if p := pm.Schema(config.ResourceProviderFullName(typ, "")); p != nil {
 		return p, p.ResourcesMap[typ]
 	}
 	return nil, nil
 }
 
+// Resource associates a state key with tf.ResourceState.
+type Resource struct {
+	*tf.ResourceState
+	Key string
+}
+
 // NewResource returns a skeleton resource state for the specified resource type
-// and ID. The returned string is a normalized resource state key.
-func (r ProviderMap) NewResource(typ, id string) (string, *tf.ResourceState, error) {
-	_, s := r.ResourceSchema(typ)
+// and ID. If useImport is true, the resource importer is applied to the new
+// resource. Importers that return multiple new states or make API calls are not
+// supported.
+func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, error) {
+	_, s := pm.ResourceSchema(typ)
 	if s == nil {
-		return "", nil, fmt.Errorf("tfx: unknown resource type %q", typ)
+		return Resource{}, fmt.Errorf("tfx: unknown resource type %q", typ)
+	}
+	if id == "" {
+		return Resource{}, fmt.Errorf("tfx: empty id for resource type %q", typ)
 	}
 	var meta map[string]interface{}
 	if s.SchemaVersion > 0 {
@@ -131,40 +142,74 @@ func (r ProviderMap) NewResource(typ, id string) (string, *tf.ResourceState, err
 			"schema_version": strconv.Itoa(s.SchemaVersion),
 		}
 	}
-	// TODO: Use importers?
-	return typ + "." + makeName(id), &tf.ResourceState{
-		Type: typ,
-		Primary: &tf.InstanceState{
-			ID:         id,
-			Attributes: map[string]string{"id": id},
-			Meta:       meta,
+	rs := Resource{
+		ResourceState: &tf.ResourceState{
+			Type: typ,
+			Primary: &tf.InstanceState{
+				ID:         id,
+				Attributes: map[string]string{"id": id},
+				Meta:       meta,
+			},
+			Provider: tf.ResolveProviderName(
+				config.ResourceProviderFullName(typ, ""), nil),
 		},
-		Provider: tf.ResolveProviderName(
-			config.ResourceProviderFullName(typ, ""), nil),
-	}, nil
+		Key: typ + "." + makeName(id),
+	}
+	if useImport {
+		d, err := s.Importer.State(s.Data(rs.Primary), nil)
+		if err != nil {
+			return Resource{}, err
+		}
+		if len(d) != 1 {
+			panic(fmt.Sprintf("tfx: %q importer returned %d values",
+				typ, len(d)))
+		}
+		rs.Primary = d[0].State()
+	}
+	return rs, nil
+}
+
+// AttrGen is a attribute value generator used to create resources. Each value
+// can be a string, a slice of strings, or a 'func(int) string', which returns
+// values for indices in the range [0,n). When "id" is a function, the special
+// "#" key must be an int that specifies n.
+type AttrGen map[string]interface{}
+
+// MakeResources calls NewResource for each "id" attribute (or for "#"
+// invocations of its generator function) and populates any remaining attribute
+// values.
+func (pm ProviderMap) MakeResources(typ string, attrs AttrGen) ([]Resource, error) {
+	return pm.makeResources(typ, attrs, false)
+}
+
+// ImportResources calls NewResource for each "id" attribute (or for "#"
+// invocations of its generator function), applies the resource importer, and
+// populates any remaining attribute values.
+func (pm ProviderMap) ImportResources(typ string, attrs AttrGen) ([]Resource, error) {
+	return pm.makeResources(typ, attrs, true)
 }
 
 // DefaultResolver returns a resolver for unmodified providers.
-func (r ProviderMap) DefaultResolver() tf.ResourceProviderResolver {
-	return r.resolver(defaultMode)
+func (pm ProviderMap) DefaultResolver() tf.ResourceProviderResolver {
+	return pm.resolver(defaultMode)
 }
 
 // SchemaResolver returns a resolver for schema-only providers. Provider
 // configuration and CRUD operations are disabled, preventing the provider from
 // requiring a valid config or making any API calls.
-func (r ProviderMap) SchemaResolver() tf.ResourceProviderResolver {
-	return r.resolver(schemaMode)
+func (pm ProviderMap) SchemaResolver() tf.ResourceProviderResolver {
+	return pm.resolver(schemaMode)
 }
 
 // PassthroughResolver returns a SchemaResolver with all schema validations
 // disabled.
-func (r ProviderMap) PassthroughResolver() tf.ResourceProviderResolver {
-	return r.resolver(passthroughMode)
+func (pm ProviderMap) PassthroughResolver() tf.ResourceProviderResolver {
+	return pm.resolver(passthroughMode)
 }
 
 // get returns the provider with the specified name.
-func (r ProviderMap) get(name string) *provider {
-	p := r[name]
+func (pm ProviderMap) get(name string) *provider {
+	p := pm[name]
 	if p != nil {
 		p.init()
 	}
@@ -172,14 +217,14 @@ func (r ProviderMap) get(name string) *provider {
 }
 
 // resolver returns a provider resolver with the specified mode of operation.
-func (r ProviderMap) resolver(mode providerMode) tf.ResourceProviderResolver {
+func (pm ProviderMap) resolver(mode providerMode) tf.ResourceProviderResolver {
 	return tf.ResourceProviderResolverFunc(func(reqd discovery.PluginRequirements) (
 		m map[string]tf.ResourceProviderFactory, errs []error,
 	) {
 		m = make(map[string]tf.ResourceProviderFactory, len(reqd))
 		for name, req := range reqd {
 			var err error
-			if p := r.get(name); p == nil {
+			if p := pm.get(name); p == nil {
 				err = fmt.Errorf("provider %q is not available", name)
 			} else if !req.Versions.Unconstrained() && p.version != "" &&
 				!req.Versions.Allows(p.discVer) {
@@ -196,6 +241,71 @@ func (r ProviderMap) resolver(mode providerMode) tf.ResourceProviderResolver {
 		}
 		return
 	})
+}
+
+// makeResources implements MakeResources and ImportResources.
+func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) ([]Resource, error) {
+	// Generate IDs
+	var ids []string
+	switch v := attrs["id"].(type) {
+	case string:
+		ids = []string{v}
+	case []string:
+		ids = v
+	case func(int) string:
+		n := attrs["#"]
+		if n == nil {
+			panic("tfx: '#' attribute required for 'id' function")
+		}
+		ids := make([]string, n.(int))
+		for i := range ids {
+			ids[i] = v(i)
+		}
+	default:
+		panic("tfx: invalid 'id' attribute value type")
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Create resources
+	rs := make([]Resource, len(ids))
+	var err error
+	for i, id := range ids {
+		if rs[i], err = pm.NewResource(typ, id, useImport); err != nil {
+			return nil, err
+		}
+	}
+
+	// Set attributes
+	for k, v := range attrs {
+		switch k {
+		case "id", "#":
+			continue
+		}
+		switch v := v.(type) {
+		case string:
+			for _, r := range rs {
+				r.Primary.Attributes[k] = v
+			}
+		case []string:
+			if len(v) != len(rs) {
+				return nil, fmt.Errorf(
+					"tfx: invalid number of %q attributes (have %d, want %d)",
+					k, len(v), len(ids))
+			}
+			for i, r := range rs {
+				r.Primary.Attributes[k] = v[i]
+			}
+		case func(int) string:
+			for i, r := range rs {
+				r.Primary.Attributes[k] = v(i)
+			}
+		default:
+			panic("tfx: invalid '" + k + "' attribute value type")
+		}
+	}
+	return rs, nil
 }
 
 // provider contains information for a single provider.
