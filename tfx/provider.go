@@ -257,7 +257,7 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 		if n == nil {
 			panic("tfx: '#' attribute required for 'id' function")
 		}
-		ids := make([]string, n.(int))
+		ids = make([]string, n.(int))
 		for i := range ids {
 			ids[i] = v(i)
 		}
