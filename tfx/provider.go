@@ -278,10 +278,14 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 	}
 
 	// Set attributes
+	_, s := pm.ResourceSchema(typ)
 	for k, v := range attrs {
 		switch k {
-		case "id", "#":
+		case "#", "id":
 			continue
+		}
+		if s.Schema[k] == nil {
+			panic(fmt.Sprintf("tfx: attribute %q not valid for %q", k, typ))
 		}
 		switch v := v.(type) {
 		case string:
@@ -290,9 +294,9 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 			}
 		case []string:
 			if len(v) != len(rs) {
-				return nil, fmt.Errorf(
+				panic(fmt.Sprintf(
 					"tfx: invalid number of %q attributes (have %d, want %d)",
-					k, len(v), len(ids))
+					k, len(v), len(ids)))
 			}
 			for i, r := range rs {
 				r.Primary.Attributes[k] = v[i]
@@ -302,7 +306,7 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 				r.Primary.Attributes[k] = v(i)
 			}
 		default:
-			panic("tfx: invalid '" + k + "' attribute value type")
+			panic(fmt.Sprintf("tfx: invalid %q attribute value type", k))
 		}
 	}
 	return rs, nil
