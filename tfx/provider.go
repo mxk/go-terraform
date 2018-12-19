@@ -169,10 +169,10 @@ func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, err
 	return rs, nil
 }
 
-// AttrGen is a attribute value generator used to create resources. Valid value
-// types are: string, []string, and func(i int) string. The latter must return
-// values for i in the range [0,n). Use "#" key to specify n when there are no
-// []string attributes.
+// AttrGen is an attribute value generator used to create resources. Valid value
+// types are: string, []string, func(i int) string, and func(i int) *string.
+// Functions must return values for i in the range [0,n). Use "#" key to specify
+// n when there are no []string attributes.
 type AttrGen map[string]interface{}
 
 // MakeResources calls NewResource for each "id" attribute (or for "#"
@@ -316,6 +316,12 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 		case func(int) string:
 			for i, r := range rs {
 				r.Primary.Attributes[k] = v(i)
+			}
+		case func(int) *string:
+			for i, r := range rs {
+				if p := v(i); p != nil {
+					r.Primary.Attributes[k] = *p
+				}
 			}
 		default:
 			panic(fmt.Sprintf("tfx: invalid %q attribute value type", k))
