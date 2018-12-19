@@ -169,10 +169,10 @@ func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, err
 	return rs, nil
 }
 
-// AttrGen is a attribute value generator used to create resources. Each value
-// can be a string, a slice of strings, or a 'func(int) string', which returns
-// values for indices in the range [0,n). When "id" is a function, the special
-// "#" key must be an int that specifies n.
+// AttrGen is a attribute value generator used to create resources. Valid value
+// types are: string, []string, and func(i int) string. The latter must return
+// values for i in the range [0,n). Use "#" key to specify n when there are no
+// []string attributes.
 type AttrGen map[string]interface{}
 
 // MakeResources calls NewResource for each "id" attribute (or for "#"
@@ -255,7 +255,15 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 	case func(int) string:
 		n := attrs["#"]
 		if n == nil {
-			panic("tfx: '#' attribute required for 'id' function")
+			for _, v := range attrs {
+				if v, ok := v.([]string); ok {
+					n = len(v)
+					break
+				}
+			}
+			if n == nil {
+				panic("tfx: '#' value required for 'id' function")
+			}
 		}
 		ids = make([]string, n.(int))
 		for i := range ids {
@@ -263,6 +271,15 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 		}
 	default:
 		panic("tfx: invalid 'id' attribute value type")
+	}
+
+	// Make sure all []string values have identical lengths
+	for k, v := range attrs {
+		if v, ok := v.([]string); ok && len(v) != len(ids) {
+			panic(fmt.Sprintf(
+				"tfx: invalid number of %q attributes (have %d, want %d)",
+				k, len(v), len(ids)))
+		}
 	}
 	if len(ids) == 0 {
 		return nil, nil
@@ -277,7 +294,7 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 		}
 	}
 
-	// Set attributes
+	// Set additional attributes
 	_, s := pm.ResourceSchema(typ)
 	for k, v := range attrs {
 		switch k {
@@ -293,11 +310,6 @@ func (pm ProviderMap) makeResources(typ string, attrs AttrGen, useImport bool) (
 				r.Primary.Attributes[k] = v
 			}
 		case []string:
-			if len(v) != len(rs) {
-				panic(fmt.Sprintf(
-					"tfx: invalid number of %q attributes (have %d, want %d)",
-					k, len(v), len(ids)))
-			}
 			for i, r := range rs {
 				r.Primary.Attributes[k] = v[i]
 			}
