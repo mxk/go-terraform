@@ -2,6 +2,8 @@
 package tfx
 
 import (
+	"strings"
+
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/config/module"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -204,6 +206,14 @@ func (c *Ctx) opts(t *module.Tree, s *tf.State, r tf.ResourceProviderResolver) t
 	if c.Meta.Env == "" {
 		c.Meta.Env = "default"
 	}
+	if t != nil {
+		implicitProviderConfig(s, t.Config())
+	} else {
+		ic := module.NewEmptyTree()
+		if implicitProviderConfig(s, ic.Config()) {
+			t = ic
+		}
+	}
 	return tf.ContextOpts{
 		Meta:             &c.Meta,
 		Module:           t,
@@ -242,4 +252,32 @@ func setDefaults(attrs map[string]string, s map[string]*schema.Schema) {
 	for k, v := range w.Map() {
 		attrs[k] = v
 	}
+}
+
+// implicitProviderConfig adds AWS provider aliases that set the correct region.
+// It returns true if config c was updated.
+func implicitProviderConfig(s *tf.State, c *config.Config) bool {
+	// TODO: Move this to tfaws package
+	if s == nil || len(s.Modules) > 1 || len(c.ProviderConfigs) > 0 {
+		return false
+	}
+	var implicit map[string]bool
+	for _, r := range s.RootModule().Resources {
+		name := config.ResourceProviderFullName("", r.Provider)
+		region := strings.TrimPrefix(name, "aws.")
+		if len(name) == len(region) || implicit[region] {
+			continue
+		}
+		if implicit == nil {
+			implicit = make(map[string]bool)
+		}
+		implicit[region] = true
+		raw, _ := config.NewRawConfig(map[string]interface{}{"region": region})
+		c.ProviderConfigs = append(c.ProviderConfigs, &config.ProviderConfig{
+			Name:      "aws",
+			Alias:     region,
+			RawConfig: raw,
+		})
+	}
+	return implicit != nil
 }
