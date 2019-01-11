@@ -21,10 +21,13 @@ func LoadModule(path string) (*module.Tree, error) {
 		if err == nil {
 			c, err = config.LoadJSON(json.RawMessage(b))
 		}
-	} else if st, err := os.Stat(path); err == nil && st.IsDir() {
-		c, err = config.LoadDir(path)
 	} else {
-		c, err = config.LoadFile(path)
+		var st os.FileInfo
+		if st, err = os.Stat(path); err == nil && st.IsDir() {
+			c, err = config.LoadDir(path)
+		} else {
+			c, err = config.LoadFile(path)
+		}
 	}
 	if err != nil {
 		return nil, err
