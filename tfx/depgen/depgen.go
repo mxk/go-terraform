@@ -443,9 +443,9 @@ func unfmt(v []byte) []byte {
 		}
 		switch b {
 		case ' ', '#', '*', '+', '-', '.', '[', ']':
-			continue // flags and indices, digits are handled in default case
+			continue // Flags and indices (digits are handled in default case)
 		case 'b', 'd', 'E', 'e', 'F', 'f', 'G', 'g', 'o', 'p', 't', 'X', 'x':
-			fill = '0' // numeric and boolean values
+			fill = '0' // Numeric and boolean values
 		case 'c', 'T', 'U':
 		case 'q':
 			// %q is replaced by a space-filled string
