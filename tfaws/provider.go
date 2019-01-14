@@ -10,6 +10,8 @@ import (
 	tfaws "github.com/terraform-providers/terraform-provider-aws/aws"
 )
 
+//go:generate go run depgen.go
+
 // ProviderName is the canonical name for the AWS provider.
 const ProviderName = "aws"
 

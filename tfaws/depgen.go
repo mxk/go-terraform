@@ -16,6 +16,8 @@ func main() {
 	p.ParseDir(dir).Filter(filter).Model().Write()
 }
 
+// TODO: Inspect log output and add custom rules
+
 func filter(v *depgen.AttrVals) bool {
 	if !strings.HasPrefix(v.Type, "aws_") {
 		return false
