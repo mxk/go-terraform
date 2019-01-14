@@ -120,8 +120,10 @@ func (pm ProviderMap) ResourceSchema(typ string) (*schema.Provider, *schema.Reso
 
 // Resource associates a state key with tf.ResourceState.
 type Resource struct {
-	*tf.ResourceState
 	Key string
+	*tf.ResourceState
+
+	data *schema.ResourceData
 }
 
 // NewResource returns a skeleton resource state for the specified resource type
@@ -143,6 +145,7 @@ func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, err
 		}
 	}
 	rs := Resource{
+		Key: typ + "." + makeName(id),
 		ResourceState: &tf.ResourceState{
 			Type: typ,
 			Primary: &tf.InstanceState{
@@ -153,10 +156,10 @@ func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, err
 			Provider: tf.ResolveProviderName(
 				config.ResourceProviderFullName(typ, ""), nil),
 		},
-		Key: typ + "." + makeName(id),
 	}
 	if useImport {
-		d, err := s.Importer.State(s.Data(rs.Primary), nil)
+		rs.data = s.Data(rs.Primary)
+		d, err := s.Importer.State(rs.data, nil)
 		if err != nil {
 			return Resource{}, err
 		}
@@ -167,6 +170,20 @@ func (pm ProviderMap) NewResource(typ, id string, useImport bool) (Resource, err
 		rs.Primary = d[0].State()
 	}
 	return rs, nil
+}
+
+// Schema returns resource schema.
+func (r *Resource) Schema() *schema.Resource {
+	_, s := Providers.ResourceSchema(r.Type)
+	return s
+}
+
+// Data returns resource data for schema-aware operations.
+func (r *Resource) Data() *schema.ResourceData {
+	if r.data == nil {
+		r.data = r.Schema().Data(r.Primary)
+	}
+	return r.data
 }
 
 // AttrGen is an attribute value generator used to create resources. Valid value
