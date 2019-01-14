@@ -19,6 +19,7 @@ func init() {
 		panic("tfaws: unknown provider version")
 	}
 	tfx.Providers.Add(ProviderName, version, factory)
+	tfx.Deps.Add(depMap)
 }
 
 // SessionLoader is called from ConfigureFunc to load default provider config.
