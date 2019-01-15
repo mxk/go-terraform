@@ -11,12 +11,14 @@ import (
 	"testing"
 
 	"github.com/LuminalHQ/cloudcover/x/tfx"
+	"github.com/hashicorp/terraform/builtin/providers/test"
+	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestModuleDir(t *testing.T) {
-	d := ModuleDir(require.Contains)
+	d := moduleDir(require.Contains)
 	require.Contains(t, filepath.Base(d), "testify@v1")
 }
 
@@ -90,14 +92,79 @@ func TestParser(t *testing.T) {
 	var p Parser
 	assert.Equal(t, want, p.ParseDir(dir).Model())
 	assert.Equal(t,
-		`Ignoring attr with 0 simple values: azurerm_network_interface.location = ["%%0000-${azurerm_resource_group.test.location}"]`,
+		`Attribute with 0 simple values: azurerm_network_interface.location = ["%%0000-${azurerm_resource_group.test.location}"]`,
 		strings.TrimSpace(b.String()))
 
 	// Filter
-	p.Filter(func(v *AttrVals) bool { return v.Attr != "location" })
+	p.Apply(map[string]bool{".location": false})
+	p.Call(func(t *Attr) bool { return t.Type != "aws_iam_user_group_membership" })
 	b.Reset()
+	delete(want.DepMap, "aws_iam_user_group_membership")
 	assert.Equal(t, want, p.Model())
 	assert.Empty(t, b.Bytes())
+}
+
+func TestParserSchema(t *testing.T) {
+	s := test.Provider().(*schema.Provider)
+	r := s.ResourcesMap
+	r1 := r["test_resource"]
+	r2 := r["test_resource_gh12183"]
+	tests := []*struct {
+		attr   string
+		scalar bool
+		str    bool
+		schema AttrSchema
+	}{
+		{},
+		{attr: "test_resource", schema: AttrSchema{
+			Resource: r1,
+		}},
+		{attr: "test_resource.id", scalar: true, str: true, schema: AttrSchema{
+			Schema:   idHier[0],
+			Resource: r1,
+		}},
+		{attr: "test_resource.required", scalar: true, str: true, schema: AttrSchema{
+			Schema:   r1.Schema["required"],
+			Resource: r1,
+		}},
+		{attr: "test_resource.set", str: true, schema: AttrSchema{
+			Schema:   r1.Schema["set"].Elem.(*schema.Schema),
+			Resource: r1,
+			Hier:     []*schema.Schema{r1.Schema["set"]},
+		}},
+		{attr: "test_resource.map_that_look_like_set", schema: AttrSchema{
+			Schema:   r1.Schema["map_that_look_like_set"],
+			Resource: r1,
+		}},
+		{attr: "test_resource.map_that_look_like_set.key", scalar: true, str: true, schema: AttrSchema{
+			Schema:   r1.Schema["map_that_look_like_set"].Elem.(*schema.Schema),
+			Resource: r1,
+			Hier:     []*schema.Schema{r1.Schema["map_that_look_like_set"]},
+		}},
+		{attr: "test_resource_gh12183.config", schema: AttrSchema{
+			Schema:   r2.Schema["config"],
+			Resource: r2,
+		}},
+		{attr: "test_resource_gh12183.config.name", str: true, schema: AttrSchema{
+			Schema:   r2.Schema["config"].Elem.(*schema.Resource).Schema["name"],
+			Resource: r2,
+			Hier:     []*schema.Schema{r2.Schema["config"]},
+		}},
+		{attr: "test_resource_gh12183.config.rules", str: true, schema: AttrSchema{
+			Schema:   r2.Schema["config"].Elem.(*schema.Resource).Schema["rules"].Elem.(*schema.Schema),
+			Resource: r2,
+			Hier:     []*schema.Schema{r2.Schema["config"], r2.Schema["config"].Elem.(*schema.Resource).Schema["rules"]},
+		}},
+	}
+	p := Parser{Provider: s}
+	for _, tc := range tests {
+		if tc.schema.Schema != nil {
+			tc.schema.Hier = append(tc.schema.Hier, tc.schema.Schema)
+		}
+		assert.Equal(t, tc.schema, p.Schema(splitAttr(tc.attr)), "%+v", tc)
+		assert.Equal(t, tc.scalar, tc.schema.IsScalar(), "%+v", tc)
+		assert.Equal(t, tc.str, tc.schema.IsString(), "%+v", tc)
+	}
 }
 
 const _ = `%s

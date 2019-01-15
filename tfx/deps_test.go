@@ -41,9 +41,8 @@ func TestDeps(t *testing.T) {
 		dst[i].Data().Set("required", "0")
 	}
 	dst[0].Data().Set("required", "x")
-	dst[2].Data().Set("set", []interface{}{"1"})
-	dst[3].Data().Set("set", []interface{}{"1"})
-	dst[3].Data().Set("list_of_map", []interface{}{map[string]interface{}{"key": "2"}})
+	dst[2].Data().Set("list_of_map", []interface{}{map[string]interface{}{"key": "1"}})
+	dst[3].Data().Set("set", []interface{}{"1", "2"})
 	for i := range dst {
 		dst[i].Primary = dst[i].data.State()
 		dst[i].data = nil

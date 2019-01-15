@@ -123,8 +123,14 @@ func getValsHelper(v interface{}, typ, next string, vals *[]string) {
 			getValsHelper(e, typ, next, vals)
 		}
 	case map[string]interface{}:
-		attr, next := splitAttr(next)
-		getValsHelper(v[attr], typ, next, vals)
+		if next == "" {
+			for _, e := range v {
+				getValsHelper(e, typ, next, vals)
+			}
+		} else {
+			attr, next := splitAttr(next)
+			getValsHelper(v[attr], typ, next, vals)
+		}
 	case *schema.Set:
 		if v.Len() > 0 {
 			for _, e := range v.List() {

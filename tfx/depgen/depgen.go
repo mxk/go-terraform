@@ -23,34 +23,24 @@ import (
 	"github.com/hashicorp/hil"
 	hast "github.com/hashicorp/hil/ast"
 	"github.com/hashicorp/terraform/config"
+	"github.com/hashicorp/terraform/helper/schema"
+	tf "github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/reflectwalk"
 	"github.com/pkg/errors"
 	md "github.com/russross/blackfriday/v2"
 )
 
-func init() { log.SetFlags(0) }
+// TODO: Log messages should be grouped by type and attribute. Parser should
+// probably maintain this log instead of everything being written to stderr
+// immediately.
 
-// ModuleDir returns the root module directory where function fn is defined.
-func ModuleDir(fn interface{}) string {
-	v := reflect.ValueOf(fn)
-	if v.Kind() != reflect.Func {
-		panic("depgen: fn is not a function")
-	}
-	f := runtime.FuncForPC(v.Pointer())
-	path, _ := f.FileLine(f.Entry())
-	for strings.IndexByte(filepath.Base(path), '@') < 0 {
-		prev := path
-		if path = filepath.Dir(path); path == prev {
-			panic("depgen: module directory not found")
-		}
-	}
-	return path
-}
+func init() { log.SetFlags(0) }
 
 // Parser extracts interpolated attribute values from HCL examples.
 type Parser struct {
-	TypeMap map[string]AttrMap
-	Sources []string
+	Provider *schema.Provider
+	Sources  []string
+	TypeMap  map[string]AttrMap
 
 	root string
 	file string
@@ -58,6 +48,23 @@ type Parser struct {
 	attr []string
 	fset *token.FileSet
 	buf  bytes.Buffer
+
+	typPrefix string
+	schema    map[string]AttrSchema
+}
+
+// Parse calls ParseDir on the module root directory of the specified provider.
+func (p *Parser) Parse(fn func() tf.ResourceProvider) *Parser {
+	if p.Provider, _ = fn().(*schema.Provider); p.Provider != nil {
+		p.Provider.ConfigureFunc = nil
+		for typ := range p.Provider.ResourcesMap {
+			if i := strings.IndexByte(typ, '_'); i > 0 {
+				p.typPrefix = typ[:i+1]
+				break
+			}
+		}
+	}
+	return p.ParseDir(moduleDir(fn))
 }
 
 // ParseDir recursively parses all supported file types in the specified
@@ -76,25 +83,80 @@ func (p *Parser) ParseDir(root string) *Parser {
 	return p
 }
 
-// Filter calls fn for each attribute in p.TypeMap and removes those for which
-// fn returns false.
-func (p *Parser) Filter(fn func(*AttrVals) bool) *Parser {
-	types := make([]string, 0, len(p.TypeMap))
-	for typ := range p.TypeMap {
-		types = append(types, typ)
+// idHier is an AttrSchema hierarchy for the common "id" attribute.
+var idHier = []*schema.Schema{{
+	Type:     schema.TypeString,
+	Computed: true,
+}}
+
+// Schema returns the schema of the specified resource attribute ("type.name").
+func (p *Parser) Schema(typ, attr string) (s AttrSchema) {
+	k := typ
+	if attr != "" {
+		k += "." + attr
 	}
-	sort.Strings(types)
-	var attrs []string
-	for _, typ := range types {
-		attrMap := p.TypeMap[typ]
-		attrs = attrs[:0]
-		for attr := range attrMap {
-			attrs = append(attrs, attr)
+	s, ok := p.schema[k]
+	if ok || p.Provider == nil || typ == "" {
+		return
+	}
+	s.Resource = p.Provider.ResourcesMap[typ]
+	if s.Resource != nil && attr != "" {
+		if attr == "id" {
+			s.Schema = idHier[0]
+			s.Hier = idHier
+		} else {
+			attr, next := splitAttr(attr)
+			if attrSchema(s.Resource.Schema[attr], next, &s.Hier) {
+				s.Schema = s.Hier[len(s.Hier)-1]
+			}
 		}
-		sort.Strings(attrs)
-		for _, attr := range attrs {
-			if !fn(attrMap[attr]) {
-				delete(attrMap, attr)
+	}
+	if p.schema == nil {
+		p.schema = make(map[string]AttrSchema)
+	}
+	p.schema[k] = s
+	return
+}
+
+// Apply removes or keeps attributes in p.TypeMap by looking up rules in a map.
+// Keys may be "<type>.<attr>", "<type>", or ".<attr>", with lookups performed
+// in that order. First match wins.
+func (p *Parser) Apply(rules map[string]bool) *Parser {
+	for typ, attrMap := range p.TypeMap {
+		for name, t := range attrMap {
+			keep, ok := rules[t.Key]
+			if !ok {
+				keep, ok = rules[typ]
+				if !ok {
+					keep, ok = rules[t.Key[strings.IndexByte(t.Key, '.'):]]
+					if !ok {
+						continue
+					}
+				}
+			}
+			if keep {
+				t.Keep()
+			} else {
+				delete(attrMap, name)
+			}
+		}
+		if len(attrMap) == 0 {
+			delete(p.TypeMap, typ)
+		}
+	}
+	return p
+}
+
+// Call calls fn for each attribute in p.TypeMap and removes those for which fn
+// returns false.
+func (p *Parser) Call(fn func(*Attr) bool) *Parser {
+	for _, typ := range p.sortedTypes() {
+		attrMap := p.TypeMap[typ]
+		for _, name := range attrMap.sortedNames() {
+			// fn is expected to call Keep explicitly if that is the right thing
+			// to do.
+			if !fn(attrMap[name]) {
+				delete(attrMap, name)
 			}
 		}
 		if len(attrMap) == 0 {
@@ -107,30 +169,29 @@ func (p *Parser) Filter(fn func(*AttrVals) bool) *Parser {
 // Model converts parsed attribute information into a dependency map.
 func (p *Parser) Model() *Model {
 	depMap := make(tfx.DepMap, len(p.TypeMap))
-	for typ, attrMap := range p.TypeMap {
-		attrs := make([]string, 0, len(attrMap))
-		for attr, vals := range attrMap {
-			if len(vals.Simple) == 1 {
-				attrs = append(attrs, attr)
-			} else {
-				log.Printf("Ignoring attr with %d simple values: %v",
-					len(vals.Simple), vals)
+	for _, typ := range p.sortedTypes() {
+		attrMap := p.TypeMap[typ]
+		names := attrMap.sortedNames()
+		spec := make([]tfx.DepSpec, 0, len(names))
+		for _, name := range names {
+			t := attrMap[name]
+			if p.Provider != nil && t.Schema == nil {
+				log.Printf("Invalid attribute: %v", t)
+				continue
 			}
-		}
-		if len(attrs) == 0 {
-			continue
-		}
-		sort.Strings(attrs)
-		spec := make([]tfx.DepSpec, len(attrs))
-		for i, k := range attrs {
-			v := attrMap[k]
-			spec[i] = tfx.DepSpec{
-				Attr:    k,
-				SrcType: v.Simple[0].Type,
-				SrcAttr: v.Simple[0].Attr,
+			if skip := t.Explain(); skip != "" {
+				log.Println(skip)
+				continue
 			}
+			spec = append(spec, tfx.DepSpec{
+				Attr:    name,
+				SrcType: t.Simple[0].Type,
+				SrcAttr: t.Simple[0].Attr,
+			})
 		}
-		depMap[typ] = spec
+		if len(spec) > 0 {
+			depMap[typ] = spec
+		}
 	}
 	_, main, _, _ := runtime.Caller(1)
 	dir := filepath.Dir(main)
@@ -203,7 +264,8 @@ func (p *Parser) parseHCL(b []byte) error {
 		return err
 	}
 	for _, r := range c.Resources {
-		if r.Mode == config.ManagedResourceMode {
+		if r.Mode == config.ManagedResourceMode &&
+			strings.HasPrefix(r.Type, p.typPrefix) {
 			p.typ = r.Type
 			p.attr = p.attr[:0]
 			reflectwalk.Walk(r.RawConfig.Raw, attrWalker{p})
@@ -221,62 +283,161 @@ func (p *Parser) addVal(v *Val) {
 		}
 		p.TypeMap[p.typ] = attrMap
 	}
-	attr := strings.Join(p.attr, ".")
-	vals := attrMap[attr]
-	if vals == nil {
-		vals = &AttrVals{Type: p.typ, Attr: attr}
-		attrMap[attr] = vals
+	name := strings.Join(p.attr, ".")
+	t := attrMap[name]
+	if t == nil {
+		t = &Attr{
+			AttrSchema: p.Schema(p.typ, name),
+			Key:        p.typ + "." + name,
+			Type:       p.typ,
+			Name:       name,
+		}
+		attrMap[name] = t
 	}
-	if v.Simple() {
-		for _, s := range vals.Simple {
+	if v.IsSimple() {
+		for _, s := range t.Simple {
 			if s.Type == v.Type && s.Attr == v.Attr {
 				return // Ignore duplicates
 			}
 		}
-		vals.Simple = append(vals.Simple, v)
+		v.AttrSchema = p.Schema(v.Type, v.Attr)
+		t.Simple = append(t.Simple, v)
 	} else {
-		for _, c := range vals.Complex {
+		for _, c := range t.Complex {
 			if c.Raw == v.Raw {
 				return
 			}
 		}
-		vals.Complex = append(vals.Complex, v)
+		t.Complex = append(t.Complex, v)
 	}
+}
+
+func (p *Parser) sortedTypes() []string {
+	v := make([]string, 0, len(p.TypeMap))
+	for typ := range p.TypeMap {
+		v = append(v, typ)
+	}
+	sort.Strings(v)
+	return v
 }
 
 // AttrMap associates attributes of one resource type with their interpolated
 // values.
-type AttrMap map[string]*AttrVals
+type AttrMap map[string]*Attr
 
-// AttrVals contains all discovered values for one attribute. Attr may refer to
-// a nested attribute within the type (e.g. "attr1.attr2.attr3"). Simple values
+func (m AttrMap) sortedNames() []string {
+	v := make([]string, 0, len(m))
+	for name := range m {
+		v = append(v, name)
+	}
+	sort.Strings(v)
+	return v
+}
+
+// AttrSchema describes the schema of a resource attribute. Hier will contain
+// multiple schemas for nested attributes.
+type AttrSchema struct {
+	*schema.Schema
+
+	Resource *schema.Resource
+	Hier     []*schema.Schema
+}
+
+// IsScalar returns true if s refers to exactly one value. It returns false if
+// the attribute is part of a list or set, or if it refers to a map without an
+// explicit key.
+func (s *AttrSchema) IsScalar() bool {
+	for i, h := range s.Hier {
+		switch h.Type {
+		case schema.TypeList, schema.TypeSet:
+			return false
+		case schema.TypeMap:
+			if i+1 == len(s.Hier) {
+				return false
+			}
+		}
+	}
+	return len(s.Hier) > 0
+}
+
+// IsString returns true if s refers to a string attribute.
+func (s *AttrSchema) IsString() bool {
+	return s.Schema != nil && s.Schema.Type == schema.TypeString
+}
+
+// Attr contains all discovered values for one attribute. Attr may refer to a
+// nested attribute within the type (e.g. "attr1.attr2.attr3"). Simple values
 // are those composed of exactly one managed resource interpolation, such as
 // "${resource_type.name.attr}". Complex values may include literal text,
 // multiple interpolations, function calls, etc. These can normally be ignored
 // for the purposes of dependency inference, but sometimes may require
 // provider-specific logic to generate the correct DepSpec.
-type AttrVals struct {
+type Attr struct {
+	AttrSchema
+
+	Key     string
 	Type    string
-	Attr    string
+	Name    string
 	Simple  []*Val
 	Complex []*Val
 }
 
-// String implements fmt.Stringer.
-func (v *AttrVals) String() string {
-	vals := make([]string, len(v.Simple)+len(v.Complex))
-	for i, s := range v.Simple {
-		vals[i] = s.Raw
+// Keep hides all but the first simple value from view, allowing the attribute
+// to be included in a DepMap if there are no other problems.
+func (t *Attr) Keep() {
+	if len(t.Simple) > 0 {
+		t.Simple = t.Simple[:1]
 	}
-	for i, c := range v.Complex {
-		vals[i+len(v.Simple)] = c.Raw
-	}
-	return fmt.Sprintf("%s.%s = %q", v.Type, v.Attr, vals)
+	t.Complex = t.Complex[:0]
 }
 
-// Val is an attribute value that contains interpolations. Type and Attr are set
-// only for simple interpolations.
+// Explain returns a string explaining why this attribute should not be included
+// in a DepMap.
+func (t *Attr) Explain() string {
+	if len(t.Simple) != 1 {
+		return fmt.Sprintf("Attribute with %d simple values: %v",
+			len(t.Simple), t)
+	}
+	if len(t.Complex) > 0 {
+		return fmt.Sprintf("Attribute with %d complex value(s): %v",
+			len(t.Complex), t)
+	}
+	if v := t.Simple[0]; t.Schema != nil {
+		if !t.IsString() {
+			return fmt.Sprintf("Non-string attribute: %v", t)
+		}
+		if v.Schema == nil {
+			return fmt.Sprintf("Value without schema: %v", t)
+		}
+		if !v.IsString() {
+			return fmt.Sprintf("Non-string value: %v", t)
+		}
+		if !v.IsScalar() {
+			return fmt.Sprintf("Non-scalar value: %v", t)
+		}
+	} else if v.Schema != nil {
+		return fmt.Sprintf("Attribute without schema: %v", t)
+	}
+	return ""
+}
+
+// String implements fmt.Stringer.
+func (t *Attr) String() string {
+	vals := make([]string, len(t.Simple)+len(t.Complex))
+	for i, v := range t.Simple {
+		vals[i] = v.Raw
+	}
+	for i, v := range t.Complex {
+		vals[i+len(t.Simple)] = v.Raw
+	}
+	return fmt.Sprintf("%s.%s = %q", t.Type, t.Name, vals)
+}
+
+// Val is an attribute value that contains interpolations. AttrSchema, Type, and
+// Attr are set only for simple interpolations.
 type Val struct {
+	AttrSchema
+
 	File string
 	Raw  string
 	Type string
@@ -322,8 +483,8 @@ func NewVal(file, raw string) (*Val, error) {
 	return v, nil
 }
 
-// Simple returns true for values with just one resource interpolation.
-func (v *Val) Simple() bool { return v.Type != "" }
+// IsSimple returns true for values with just one resource interpolation.
+func (v *Val) IsSimple() bool { return v.Type != "" }
 
 // String implements fmt.Stringer.
 func (v *Val) String() string { return v.Raw }
@@ -397,6 +558,8 @@ func (v goVisitor) Visit(n ast.Node) ast.Visitor {
 	return v
 }
 
+// TODO: Verify that this handles *schema.Set correctly
+
 // attrWalker implements reflectwalk interfaces to extract interpolated
 // attribute values from RawConfig.
 type attrWalker struct{ *Parser }
@@ -428,6 +591,78 @@ func (w attrWalker) Primitive(v reflect.Value) error {
 		w.addVal(val)
 	}
 	return err
+}
+
+// moduleDir returns the root module directory where function fn is defined.
+func moduleDir(fn interface{}) string {
+	v := reflect.ValueOf(fn)
+	if v.Kind() != reflect.Func {
+		panic("depgen: fn is not a function")
+	}
+	f := runtime.FuncForPC(v.Pointer())
+	path, _ := f.FileLine(f.Entry())
+	for strings.IndexByte(filepath.Base(path), '@') < 0 {
+		prev := path
+		if path = filepath.Dir(path); path == prev {
+			panic("depgen: module directory not found")
+		}
+	}
+	return path
+}
+
+var stringSchema = schema.Schema{Type: schema.TypeString}
+
+// attrSchema recursively searches schema for the specified attribute. It
+// returns true if the attribute is found.
+func attrSchema(s *schema.Schema, next string, hier *[]*schema.Schema) bool {
+	if s == nil {
+		return false
+	}
+	switch *hier = append(*hier, s); s.Type {
+	case schema.TypeList, schema.TypeSet:
+		switch e := s.Elem.(type) {
+		case *schema.Schema:
+			return attrSchema(e, next, hier)
+		case *schema.Resource:
+			if next == "" {
+				return true
+			}
+			attr, next := splitAttr(next)
+			return attrSchema(e.Schema[attr], next, hier)
+		default:
+			panic(fmt.Sprintf("depgen: unexpected elem type: %T", e))
+		}
+	case schema.TypeMap:
+		if next == "" {
+			return true
+		}
+		// In theory, a map can't contain complex values per docs and this:
+		// https://github.com/hashicorp/terraform/issues/6215
+		// In practice, there is aws_cognito_identity_pool_roles_attachment,
+		// azurerm_log_analytics_workspace_linked_service, and others. In this
+		// case, key refers to an attribute in the child resource.
+		attr, next := splitAttr(next)
+		switch e := s.Elem.(type) {
+		case *schema.Schema:
+			return attrSchema(e, next, hier)
+		case *schema.Resource:
+			return attrSchema(e.Schema[attr], next, hier)
+		case nil:
+			return attrSchema(&stringSchema, next, hier)
+		default:
+			panic(fmt.Sprintf("depgen: unexpected elem type: %T", e))
+		}
+	default:
+		return next == ""
+	}
+}
+
+// splitAttr splits s at the first period.
+func splitAttr(s string) (attr, next string) {
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		return s[:i], s[i+1:]
+	}
+	return s, ""
 }
 
 // unfmt replaces fmt verbs in b with mock values. This allows parsing HCL
