@@ -469,6 +469,7 @@ var depMap = tfx.DepMap{
 	"aws_ec2_fleet": {
 		{Attr: "launch_template_config.launch_template_specification.launch_template_id", SrcType: "aws_launch_template", SrcAttr: "id"},
 		{Attr: "launch_template_config.override.instance_type", SrcType: "aws_launch_template", SrcAttr: "instance_type"},
+		{Attr: "launch_template_config.override.subnet_id", SrcType: "aws_subnet", SrcAttr: "id"},
 	},
 	"aws_ec2_transit_gateway_route": {
 		{Attr: "transit_gateway_attachment_id", SrcType: "aws_ec2_transit_gateway_vpc_attachment", SrcAttr: "id"},
@@ -518,6 +519,7 @@ var depMap = tfx.DepMap{
 		{Attr: "vpc_id", SrcType: "aws_vpc", SrcAttr: "id"},
 	},
 	"aws_eip": {
+		{Attr: "instance", SrcType: "aws_instance", SrcAttr: "id"},
 		{Attr: "network_interface", SrcType: "aws_network_interface", SrcAttr: "id"},
 	},
 	"aws_eip_association": {
@@ -554,6 +556,7 @@ var depMap = tfx.DepMap{
 		{Attr: "subnet_group_name", SrcType: "aws_elasticache_subnet_group", SrcAttr: "name"},
 	},
 	"aws_elasticache_replication_group": {
+		{Attr: "parameter_group_name", SrcType: "aws_elasticache_parameter_group", SrcAttr: "name"},
 		{Attr: "security_group_ids", SrcType: "aws_security_group", SrcAttr: "id"},
 		{Attr: "security_group_names", SrcType: "aws_elasticache_security_group", SrcAttr: "name"},
 		{Attr: "subnet_group_name", SrcType: "aws_elasticache_subnet_group", SrcAttr: "name"},
@@ -727,6 +730,7 @@ var depMap = tfx.DepMap{
 		{Attr: "network_interface.network_interface_id", SrcType: "aws_network_interface", SrcAttr: "id"},
 		{Attr: "placement_group", SrcType: "aws_placement_group", SrcAttr: "name"},
 		{Attr: "security_groups", SrcType: "aws_security_group", SrcAttr: "name"},
+		{Attr: "subnet_id", SrcType: "aws_subnet", SrcAttr: "id"},
 		{Attr: "vpc_security_group_ids", SrcType: "aws_security_group", SrcAttr: "id"},
 	},
 	"aws_internet_gateway": {
@@ -888,6 +892,7 @@ var depMap = tfx.DepMap{
 		{Attr: "subnet_ids", SrcType: "aws_subnet", SrcAttr: "id"},
 	},
 	"aws_nat_gateway": {
+		{Attr: "allocation_id", SrcType: "aws_eip", SrcAttr: "id"},
 		{Attr: "subnet_id", SrcType: "aws_subnet", SrcAttr: "id"},
 	},
 	"aws_neptune_cluster": {
@@ -923,6 +928,9 @@ var depMap = tfx.DepMap{
 	"aws_network_interface_attachment": {
 		{Attr: "instance_id", SrcType: "aws_instance", SrcAttr: "id"},
 		{Attr: "network_interface_id", SrcType: "aws_network_interface", SrcAttr: "id"},
+	},
+	"aws_network_interface_sg_attachment": {
+		{Attr: "security_group_id", SrcType: "aws_security_group", SrcAttr: "id"},
 	},
 	"aws_opsworks_application": {
 		{Attr: "stack_id", SrcType: "aws_opsworks_stack", SrcAttr: "id"},
@@ -1064,6 +1072,7 @@ var depMap = tfx.DepMap{
 		{Attr: "egress_only_gateway_id", SrcType: "aws_egress_only_internet_gateway", SrcAttr: "id"},
 		{Attr: "gateway_id", SrcType: "aws_internet_gateway", SrcAttr: "id"},
 		{Attr: "instance_id", SrcType: "aws_instance", SrcAttr: "id"},
+		{Attr: "nat_gateway_id", SrcType: "aws_nat_gateway", SrcAttr: "id"},
 		{Attr: "network_interface_id", SrcType: "aws_network_interface", SrcAttr: "id"},
 		{Attr: "transit_gateway_id", SrcType: "aws_ec2_transit_gateway_vpc_attachment", SrcAttr: "transit_gateway_id"},
 		{Attr: "vpc_peering_connection_id", SrcType: "aws_vpc_peering_connection", SrcAttr: "id"},
@@ -1099,6 +1108,7 @@ var depMap = tfx.DepMap{
 	},
 	"aws_route_table_association": {
 		{Attr: "route_table_id", SrcType: "aws_route_table", SrcAttr: "id"},
+		{Attr: "subnet_id", SrcType: "aws_subnet", SrcAttr: "id"},
 	},
 	"aws_s3_bucket": {
 		{Attr: "logging.target_bucket", SrcType: "aws_s3_bucket", SrcAttr: "id"},
@@ -1294,6 +1304,7 @@ var depMap = tfx.DepMap{
 		{Attr: "vpc_endpoint_service_id", SrcType: "aws_vpc_endpoint_service", SrcAttr: "id"},
 	},
 	"aws_vpc_endpoint_subnet_association": {
+		{Attr: "subnet_id", SrcType: "aws_subnet", SrcAttr: "id"},
 		{Attr: "vpc_endpoint_id", SrcType: "aws_vpc_endpoint", SrcAttr: "id"},
 	},
 	"aws_vpc_ipv4_cidr_block_association": {
