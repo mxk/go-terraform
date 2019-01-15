@@ -28,23 +28,12 @@ func TestNewVal(t *testing.T) {
 		want *Val
 	}{
 		{},
-		{have: "abc"},
-		{have: "$${literal}"},
-		{have: "${data.resource_type.name.attr}"},
-		{
-			have: "${resource_type.name.attr}",
-			want: &Val{
-				Raw:  "${resource_type.name.attr}",
-				Type: "resource_type",
-				Attr: "attr",
-			},
-		}, {
-			have: "complex${resource_type.name.attr}",
-			want: &Val{Raw: "complex${resource_type.name.attr}"},
-		}, {
-			have: "${resource_type.name.attr[0]}",
-			want: &Val{Raw: "${resource_type.name.attr[0]}"},
-		},
+		{"abc", nil},
+		{"$${literal}", nil},
+		{"${data.resource_type.name.attr}", nil},
+		{"${resource_type.name.attr}", &Val{Type: "resource_type", Attr: "attr"}},
+		{"${element(resource_type.name.attr[0], count.index)}", &Val{Type: "resource_type", Attr: "attr"}},
+		{"complex${resource_type.name.attr}", &Val{}},
 	}
 	for _, tc := range tests {
 		v, err := NewVal("", tc.have)
@@ -52,8 +41,8 @@ func TestNewVal(t *testing.T) {
 		if tc.want == nil {
 			assert.Nil(t, v, "%+v", tc)
 		} else if assert.NotNil(t, v, "%+v", tc) {
+			tc.want.Raw = tc.have
 			v.Root = nil
-			v.Vars = nil
 			assert.Equal(t, tc.want, v, "%+v", tc)
 		}
 	}

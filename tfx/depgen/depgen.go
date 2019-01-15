@@ -337,9 +337,8 @@ func (m AttrMap) sortedNames() []string {
 // AttrSchema describes the schema of a resource attribute. Hier will contain
 // multiple schemas for nested attributes.
 type AttrSchema struct {
-	*schema.Schema
-
 	Resource *schema.Resource
+	Schema   *schema.Schema
 	Hier     []*schema.Schema
 }
 
@@ -443,7 +442,6 @@ type Val struct {
 	Type string
 	Attr string
 	Root *hast.Output
-	Vars []config.InterpolatedVariable
 }
 
 // NewVal parses a HashiCorp Interpolation Language (HIL) string and returns a
@@ -460,24 +458,58 @@ func NewVal(file, raw string) (*Val, error) {
 	if n == nil {
 		return nil, nil // Literal string (e.g. "$${literal}")
 	}
-	vars, err := config.DetectVariables(n)
-	var src *config.ResourceVariable
-	for _, v := range vars {
-		r, _ := v.(*config.ResourceVariable)
-		if r != nil && r.Mode == config.ManagedResourceMode {
-			src = r
-			break
+
+	// Find all VariableAccess nodes, leaving just one on the stack for simple
+	// expressions.
+	var allVars vaStack
+	s := make(vaStack, 0, 8)
+	n.Accept(func(n hast.Node) hast.Node {
+		switch n := n.(type) {
+		case *hast.Arithmetic:
+			s.pop(len(n.Exprs))
+			s.push(nil)
+		case *hast.Call:
+			if v := s.pop(len(n.Args)); n.Func == "element" {
+				s.push(v[0])
+			} else {
+				s.push(nil)
+			}
+		case *hast.Conditional:
+			s.pop(3)
+			s.push(nil)
+		case *hast.Index:
+			s.push(s.pop(2)[0])
+		case *hast.LiteralNode:
+			s.push(nil)
+		case *hast.Output:
+		case *hast.VariableAccess:
+			s.push(n)
+			allVars.push(n)
+		default:
+			panic(fmt.Sprintf("depgen: unsupported node type: %T", n))
 		}
-	}
-	if err != nil || src == nil {
-		return nil, err
-	}
-	v := &Val{File: file, Raw: raw, Root: n, Vars: vars}
-	if len(n.Exprs) == 1 {
-		if _, ok := n.Exprs[0].(*hast.VariableAccess); ok {
-			// Simple value
-			v.Type = src.Type
-			v.Attr = src.Field
+		return n
+	})
+
+	// Parse all VariableAccess nodes. At least one resource expression is
+	// needed to return a value.
+	var v *Val
+	for _, va := range allVars {
+		interp, err := config.NewInterpolatedVariable(va.Name)
+		if err != nil {
+			return nil, err
+		}
+		r, _ := interp.(*config.ResourceVariable)
+		if r != nil && r.Mode == config.ManagedResourceMode {
+			if v == nil {
+				v = &Val{File: file, Raw: raw, Root: n}
+			}
+			if len(s) == 1 && s[0] == va {
+				// Simple value
+				v.Type = r.Type
+				v.Attr = r.Field
+			}
+			// Keep going to catch any errors
 		}
 	}
 	return v, nil
@@ -591,6 +623,19 @@ func (w attrWalker) Primitive(v reflect.Value) error {
 		w.addVal(val)
 	}
 	return err
+}
+
+// vaStack is a stack used by NewVal to evaluate AST nodes.
+type vaStack []*hast.VariableAccess
+
+func (s *vaStack) push(v *hast.VariableAccess) {
+	*s = append(*s, v)
+}
+
+func (s *vaStack) pop(n int) (v []*hast.VariableAccess) {
+	i := len(*s) - n
+	*s, v = (*s)[:i], (*s)[i:]
+	return v
 }
 
 // moduleDir returns the root module directory where function fn is defined.
