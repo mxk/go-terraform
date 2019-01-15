@@ -67,9 +67,6 @@ var depMap = tfx.DepMap{
 	},
 	"aws_api_gateway_domain_name": {
 		{Attr: "certificate_arn", SrcType: "aws_acm_certificate_validation", SrcAttr: "certificate_arn"},
-		{Attr: "certificate_body", SrcType: "tls_locally_signed_cert", SrcAttr: "cert_pem"},
-		{Attr: "certificate_chain", SrcType: "tls_self_signed_cert", SrcAttr: "cert_pem"},
-		{Attr: "certificate_private_key", SrcType: "tls_private_key", SrcAttr: "private_key_pem"},
 		{Attr: "regional_certificate_arn", SrcType: "aws_acm_certificate_validation", SrcAttr: "certificate_arn"},
 	},
 	"aws_api_gateway_gateway_response": {
@@ -414,7 +411,6 @@ var depMap = tfx.DepMap{
 		{Attr: "directory_id", SrcType: "aws_directory_service_directory", SrcAttr: "id"},
 	},
 	"aws_directory_service_directory": {
-		{Attr: "connect_settings.customer_dns_ips", SrcType: "aws_directory_service_directory", SrcAttr: "dns_ip_addresses"},
 		{Attr: "connect_settings.subnet_ids", SrcType: "aws_subnet", SrcAttr: "id"},
 		{Attr: "connect_settings.vpc_id", SrcType: "aws_vpc", SrcAttr: "id"},
 		{Attr: "vpc_settings.subnet_ids", SrcType: "aws_subnet", SrcAttr: "id"},
@@ -472,7 +468,6 @@ var depMap = tfx.DepMap{
 	},
 	"aws_ec2_fleet": {
 		{Attr: "launch_template_config.launch_template_specification.launch_template_id", SrcType: "aws_launch_template", SrcAttr: "id"},
-		{Attr: "launch_template_config.launch_template_specification.version", SrcType: "aws_launch_template", SrcAttr: "latest_version"},
 		{Attr: "launch_template_config.override.instance_type", SrcType: "aws_launch_template", SrcAttr: "instance_type"},
 	},
 	"aws_ec2_transit_gateway_route": {
@@ -703,10 +698,6 @@ var depMap = tfx.DepMap{
 	"aws_iam_role_policy_attachment": {
 		{Attr: "policy_arn", SrcType: "aws_iam_policy", SrcAttr: "arn"},
 	},
-	"aws_iam_server_certificate": {
-		{Attr: "certificate_body", SrcType: "tls_self_signed_cert", SrcAttr: "cert_pem"},
-		{Attr: "private_key", SrcType: "tls_private_key", SrcAttr: "private_key_pem"},
-	},
 	"aws_iam_user_group_membership": {
 		{Attr: "groups", SrcType: "aws_iam_group", SrcAttr: "name"},
 		{Attr: "user", SrcType: "aws_iam_user", SrcAttr: "name"},
@@ -747,10 +738,6 @@ var depMap = tfx.DepMap{
 	},
 	"aws_iot_thing": {
 		{Attr: "thing_type_name", SrcType: "aws_iot_thing_type", SrcAttr: "name"},
-	},
-	"aws_iot_thing_attachment": {
-		{Attr: "principal", SrcType: "aws_iot_certificate", SrcAttr: "arn"},
-		{Attr: "thing", SrcType: "aws_iot_thing", SrcAttr: "name"},
 	},
 	"aws_iot_thing_principal_attachment": {
 		{Attr: "principal", SrcType: "aws_iot_certificate", SrcAttr: "arn"},
@@ -843,11 +830,9 @@ var depMap = tfx.DepMap{
 		{Attr: "load_balancer", SrcType: "aws_elb", SrcAttr: "id"},
 	},
 	"aws_lb_listener": {
-		{Attr: "action.target_group_arn", SrcType: "aws_lb_target_group", SrcAttr: "arn"},
 		{Attr: "default_action.authenticate_cognito.user_pool_arn", SrcType: "aws_cognito_user_pool", SrcAttr: "arn"},
 		{Attr: "default_action.authenticate_cognito.user_pool_client_id", SrcType: "aws_cognito_user_pool_client", SrcAttr: "id"},
 		{Attr: "default_action.authenticate_cognito.user_pool_domain", SrcType: "aws_cognito_user_pool_domain", SrcAttr: "domain"},
-		{Attr: "listener_arn", SrcType: "aws_lb_listener", SrcAttr: "arn"},
 	},
 	"aws_lb_listener_certificate": {
 		{Attr: "listener_arn", SrcType: "aws_lb_listener", SrcAttr: "arn"},
@@ -899,7 +884,6 @@ var depMap = tfx.DepMap{
 	},
 	"aws_mq_broker": {
 		{Attr: "configuration.id", SrcType: "aws_mq_configuration", SrcAttr: "id"},
-		{Attr: "configuration.revision", SrcType: "aws_mq_configuration", SrcAttr: "latest_revision"},
 		{Attr: "security_groups", SrcType: "aws_security_group", SrcAttr: "id"},
 		{Attr: "subnet_ids", SrcType: "aws_subnet", SrcAttr: "id"},
 	},
@@ -1070,7 +1054,6 @@ var depMap = tfx.DepMap{
 		{Attr: "vpc_security_group_ids", SrcType: "aws_security_group", SrcAttr: "id"},
 	},
 	"aws_redshift_event_subscription": {
-		{Attr: "sns_topic", SrcType: "aws_sns_topic", SrcAttr: "arn"},
 		{Attr: "sns_topic_arn", SrcType: "aws_sns_topic", SrcAttr: "arn"},
 	},
 	"aws_redshift_subnet_group": {
@@ -1288,7 +1271,6 @@ var depMap = tfx.DepMap{
 	},
 	"aws_vpc_dhcp_options": {
 		{Attr: "domain_name", SrcType: "aws_directory_service_directory", SrcAttr: "name"},
-		{Attr: "domain_name_servers", SrcType: "aws_directory_service_directory", SrcAttr: "dns_ip_addresses"},
 	},
 	"aws_vpc_dhcp_options_association": {
 		{Attr: "dhcp_options_id", SrcType: "aws_vpc_dhcp_options", SrcAttr: "id"},
