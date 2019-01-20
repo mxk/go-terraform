@@ -3,6 +3,7 @@ package tfaws
 import (
 	"sync"
 
+	"github.com/LuminalHQ/cloudcover/x/gomod"
 	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -16,11 +17,8 @@ import (
 const ProviderName = "aws"
 
 func init() {
-	version := tfx.ProviderVersion(tfaws.Provider)
-	if version == "" {
-		panic("tfaws: unknown provider version")
-	}
-	tfx.Providers.Add(ProviderName, version, factory)
+	mod := gomod.Root(tfaws.Provider)
+	tfx.Providers.Add(ProviderName, mod.Version(), factory)
 	tfx.Deps.Add(depMap)
 }
 
