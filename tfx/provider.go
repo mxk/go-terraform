@@ -2,9 +2,6 @@ package tfx
 
 import (
 	"fmt"
-	"path/filepath"
-	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 
@@ -22,23 +19,6 @@ var Providers ProviderMap
 // terraform.ResourceProviderFactoryFixed.
 func MakeFactory(f func() tf.ResourceProvider) tf.ResourceProviderFactory {
 	return func() (tf.ResourceProvider, error) { return f(), nil }
-}
-
-// ProviderVersion extracts the package version from the import path of a
-// provider function. This assumes the use of Go modules.
-func ProviderVersion(f func() tf.ResourceProvider) string {
-	fn := runtime.FuncForPC(reflect.ValueOf(f).Pointer())
-	if fn == nil {
-		panic("tfx: provider function not found")
-	}
-	path, _ := fn.FileLine(fn.Entry())
-	for prev := ""; path != prev; prev, path = path, filepath.Dir(path) {
-		name := filepath.Base(path)
-		if i := strings.Index(name, "@v"); i > 0 {
-			return name[i+2:]
-		}
-	}
-	return ""
 }
 
 // Config creates schema.ResourceData from a raw config.

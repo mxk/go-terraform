@@ -4,21 +4,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform/builtin/providers/test"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/stretchr/testify/require"
 )
-
-func TestProviderVersion(t *testing.T) {
-	ver := ProviderVersion(test.Provider)
-	require.Regexp(t, `^\d+\.\d+\.\d+`, ver)
-	v, err := version.NewVersion(ver)
-	require.NoError(t, err)
-	min, err := version.NewConstraint(">= 0.11.10")
-	require.NoError(t, err)
-	require.True(t, min.Check(v))
-}
 
 func TestConfig(t *testing.T) {
 	d, err := Config(test.Provider().(*schema.Provider).Schema, map[string]interface{}{

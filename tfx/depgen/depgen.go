@@ -19,6 +19,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/LuminalHQ/cloudcover/x/gomod"
 	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/hashicorp/hil"
 	hast "github.com/hashicorp/hil/ast"
@@ -64,7 +65,7 @@ func (p *Parser) Parse(fn func() tf.ResourceProvider) *Parser {
 			}
 		}
 	}
-	return p.ParseDir(moduleDir(fn))
+	return p.ParseDir(gomod.Root(fn).Path())
 }
 
 // ParseDir recursively parses all supported file types in the specified
@@ -636,23 +637,6 @@ func (s *vaStack) pop(n int) (v []*hast.VariableAccess) {
 	i := len(*s) - n
 	*s, v = (*s)[:i], (*s)[i:]
 	return v
-}
-
-// moduleDir returns the root module directory where function fn is defined.
-func moduleDir(fn interface{}) string {
-	v := reflect.ValueOf(fn)
-	if v.Kind() != reflect.Func {
-		panic("depgen: fn is not a function")
-	}
-	f := runtime.FuncForPC(v.Pointer())
-	path, _ := f.FileLine(f.Entry())
-	for strings.IndexByte(filepath.Base(path), '@') < 0 {
-		prev := path
-		if path = filepath.Dir(path); path == prev {
-			panic("depgen: module directory not found")
-		}
-	}
-	return path
 }
 
 var stringSchema = schema.Schema{Type: schema.TypeString}

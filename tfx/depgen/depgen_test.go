@@ -5,22 +5,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/LuminalHQ/cloudcover/x/gomod"
 	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/hashicorp/terraform/builtin/providers/test"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestModuleDir(t *testing.T) {
-	d := moduleDir(require.Contains)
-	require.Contains(t, filepath.Base(d), "testify@v1")
-}
 
 func TestNewVal(t *testing.T) {
 	tests := []*struct {
@@ -51,7 +45,7 @@ func TestNewVal(t *testing.T) {
 }
 
 func TestParser(t *testing.T) {
-	dir := testDir()
+	dir := filepath.Dir(gomod.File(TestParser))
 	want := &Model{
 		Out:     filepath.Join(dir, "depmap.go"),
 		Sources: []string{dir},
@@ -176,9 +170,3 @@ resource "azurerm_network_interface" "%s" {
 %sEOF
 }
 %s`
-
-func testDir() string {
-	fn := runtime.FuncForPC(reflect.ValueOf(TestParser).Pointer())
-	file, _ := fn.FileLine(fn.Entry())
-	return filepath.Dir(file)
-}
