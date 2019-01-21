@@ -3,8 +3,8 @@ package tfx
 import (
 	"testing"
 
-	"github.com/LuminalHQ/cloudcover/x/az"
 	tf "github.com/hashicorp/terraform/terraform"
+	"github.com/mxk/cloudcover/x/az"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

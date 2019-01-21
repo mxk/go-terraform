@@ -3,11 +3,11 @@ package tfaws
 import (
 	"sync"
 
-	"github.com/LuminalHQ/cloudcover/x/gomod"
-	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
+	"github.com/mxk/cloudcover/x/gomod"
+	"github.com/mxk/cloudcover/x/tfx"
 	tfaws "github.com/terraform-providers/terraform-provider-aws/aws"
 )
 

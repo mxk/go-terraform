@@ -3,7 +3,7 @@
 
 package tfaws
 
-import "github.com/LuminalHQ/cloudcover/x/tfx"
+import "github.com/mxk/cloudcover/x/tfx"
 
 var depMap = tfx.DepMap{
 	"aws_acm_certificate_validation": {

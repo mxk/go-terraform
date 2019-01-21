@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LuminalHQ/cloudcover/x/gomod"
-	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/hashicorp/terraform/builtin/providers/test"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/mxk/cloudcover/x/gomod"
+	"github.com/mxk/cloudcover/x/tfx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

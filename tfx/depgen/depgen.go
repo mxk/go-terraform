@@ -19,14 +19,14 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/LuminalHQ/cloudcover/x/gomod"
-	"github.com/LuminalHQ/cloudcover/x/tfx"
 	"github.com/hashicorp/hil"
 	hast "github.com/hashicorp/hil/ast"
 	"github.com/hashicorp/terraform/config"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/reflectwalk"
+	"github.com/mxk/cloudcover/x/gomod"
+	"github.com/mxk/cloudcover/x/tfx"
 	"github.com/pkg/errors"
 	md "github.com/russross/blackfriday/v2"
 )
