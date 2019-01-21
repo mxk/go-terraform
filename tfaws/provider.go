@@ -6,8 +6,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
-	"github.com/mxk/cloudcover/x/tfx"
 	"github.com/mxk/go-gomod"
+	"github.com/mxk/go-terraform/tfx"
 	tfaws "github.com/terraform-providers/terraform-provider-aws/aws"
 )
 

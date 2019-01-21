@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	tf "github.com/hashicorp/terraform/terraform"
-	"github.com/mxk/cloudcover/x/az"
+	"github.com/mxk/go-cloud/azure/az"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

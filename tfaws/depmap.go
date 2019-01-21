@@ -3,7 +3,7 @@
 
 package tfaws
 
-import "github.com/mxk/cloudcover/x/tfx"
+import "github.com/mxk/go-terraform/tfx"
 
 var depMap = tfx.DepMap{
 	"aws_acm_certificate_validation": {

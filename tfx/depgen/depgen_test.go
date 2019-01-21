@@ -10,8 +10,8 @@ import (
 
 	"github.com/hashicorp/terraform/builtin/providers/test"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/mxk/cloudcover/x/tfx"
 	"github.com/mxk/go-gomod"
+	"github.com/mxk/go-terraform/tfx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

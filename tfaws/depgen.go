@@ -3,7 +3,7 @@
 package main
 
 import (
-	"github.com/mxk/cloudcover/x/tfx/depgen"
+	"github.com/mxk/go-terraform/tfx/depgen"
 	"github.com/terraform-providers/terraform-provider-aws/aws"
 )
 

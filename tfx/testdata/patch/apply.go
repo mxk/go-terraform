@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mxk/cloudcover/x/tfx"
+	"github.com/mxk/go-terraform/tfx"
 	"github.com/hashicorp/terraform/builtin/providers/test"
 )
 

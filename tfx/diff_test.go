@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mxk/cloudcover/x/cli"
+	"github.com/mxk/go-cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm"
