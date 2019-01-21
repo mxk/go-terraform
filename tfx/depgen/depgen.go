@@ -25,8 +25,8 @@ import (
 	"github.com/hashicorp/terraform/helper/schema"
 	tf "github.com/hashicorp/terraform/terraform"
 	"github.com/mitchellh/reflectwalk"
-	"github.com/mxk/cloudcover/x/gomod"
 	"github.com/mxk/cloudcover/x/tfx"
+	"github.com/mxk/go-gomod"
 	"github.com/pkg/errors"
 	md "github.com/russross/blackfriday/v2"
 )
